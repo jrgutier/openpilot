@@ -116,11 +116,11 @@ class CarControllerParams:
   # 250 is ~2.8 m/s^2 above 17 m/s, then linearly ramps to ~1.6 m/s^2 from 17 m/s to 9 m/s
   # TODO: it is theorized older models have different steering racks and achieve down to half the
   #  lateral acceleration referenced here at all speeds. detect this and ship a torque increase for those models
-  STEER_MAX = 250  # 350 is intended to maintain lateral accel, not increase it
-  STEER_MAX_LOOKUP = [9, 17], [350, 250]
+  STEER_MAX = 500  # doubled from 250 for more steering authority
+  STEER_MAX_LOOKUP = [9, 17], [700, 500]
   STEER_STEP = 1
-  STEER_DELTA_UP = 3  # torque increase per refresh
-  STEER_DELTA_DOWN = 5  # torque decrease per refresh
+  STEER_DELTA_UP = 6  # torque increase per refresh (doubled from 3)
+  STEER_DELTA_DOWN = 10  # torque decrease per refresh (doubled from 5)
   STEER_DRIVER_ALLOWANCE = 100  # allowed driver torque before start limiting
   STEER_DRIVER_MULTIPLIER = 2  # weight driver torque
   STEER_DRIVER_FACTOR = 100
