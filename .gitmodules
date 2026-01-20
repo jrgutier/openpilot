@@ -1,9 +1,6 @@
 [submodule "panda"]
   path = panda
   url = https://github.com/jrgutier/panda.git
-[submodule "opendbc"]
-  path = opendbc_repo
-  url = https://github.com/jrgutier/opendbc.git
 [submodule "msgq"]
   path = msgq_repo
   url = https://github.com/jrgutier/msgq.git
