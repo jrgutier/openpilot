@@ -39,6 +39,10 @@ class TestRivianSafetyBase(common.CarSafetyTest, common.DriverTorqueSteeringSafe
   DRIVER_TORQUE_ALLOWANCE = 100
   DRIVER_TORQUE_FACTOR = 2
 
+  # Fault avoidance: one frame send torque=0 and request=0 after 89 frames above angle
+  MIN_VALID_STEERING_FRAMES = 89
+  MAX_INVALID_STEERING_FRAMES = 1
+
   cnt_speed = 0
   cnt_speed_2 = 0
 
