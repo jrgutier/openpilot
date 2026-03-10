@@ -59,6 +59,9 @@ class CarState(CarStateBase, CarStateExt):
     ret.cruiseState.available = True  # cp.vl["VDM_AdasSts"]["VDM_AdasInterfaceStatus"] == 1
     ret.cruiseState.standstill = cp.vl["VDM_AdasSts"]["VDM_AdasVehicleHoldStatus"] == 1
 
+    # CarStateSP: speed limit from TSR (ACM_tsrSpdDisClsMain) for speed limit assist
+    ret_sp.speedLimit = self.last_speed * CV.MPH_TO_MS if speed != 0 else 0.0
+
     # ACM_Status->ACM_FaultSupervisorState normally 1, appears to go to 3 when either:
     # 1. car in park/not in drive (normal)
     # 2. something (message from another ECU) ACM relies on is faulty
