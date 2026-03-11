@@ -101,7 +101,7 @@ static bool rivian_tx_hook(const CANPacket_t *msg) {
       {9., 17., 17.},
       {350, 350, 350},
     },
-    .max_rate_up = 5,
+    .max_rate_up = 4,
     .max_rate_down = 5,
     .max_rt_delta = 125,
     .driver_torque_multiplier = 2,
