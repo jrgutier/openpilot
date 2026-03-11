@@ -95,11 +95,11 @@ static void rivian_rx_hook(const CANPacket_t *msg) {
 static bool rivian_tx_hook(const CANPacket_t *msg) {
   // Rivian utilizes more torque at low speed to maintain the same lateral accel
   const TorqueSteeringLimits RIVIAN_STEERING_LIMITS = {
-    .max_torque = 450,
+    .max_torque = 560,
     .dynamic_max_torque = true,
     .max_torque_lookup = {
       {9., 17., 17.},
-      {450, 250, 250},
+      {560, 350, 350},
     },
     .max_rate_up = 3,
     .max_rate_down = 5,
@@ -109,7 +109,7 @@ static bool rivian_tx_hook(const CANPacket_t *msg) {
     .type = TorqueDriverLimited,
     // One-frame blip: openpilot sends torque=0 and steer_req=0; panda holds last torque for rate limit
     .min_valid_request_frames = 89,
-    .max_invalid_request_frames = 1,
+    .max_invalid_request_frames = 2,
     .min_valid_request_rt_interval = 810000,  // 810ms min between blips
     .has_steer_req_tolerance = true,
   };

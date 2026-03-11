@@ -9,7 +9,7 @@ from opendbc.car.rivian.values import CarControllerParams
 from opendbc.sunnypilot.car.rivian.mads import MadsCarController
 
 # Fault avoidance: one frame send torque=0 and request=0; car needs both to not see LKAS active. Panda allows (0,0) through by skipping rate checks when steer_req=0.
-MAX_ANGLE_DEG = 87
+MAX_ANGLE_DEG = 90
 MAX_ANGLE_FRAMES = 89
 BLIP_FRAMES = 1
 
@@ -50,7 +50,8 @@ class CarController(CarControllerBase, MadsCarController):
     blip = self.mads.lat_active and not lka_act_toi
     send_torque = 0 if blip else apply_torque
     send_lka_act_toi = 1 if (self.mads.lat_active and not blip) else 0
-    can_sends.append(create_lka_steering(self.packer, self.frame, CS.acm_lka_hba_cmd, send_torque, CC.enabled, CC.latActive, self.mads, send_lka_act_toi))
+    send_elk_request = 0 if (blip or not self.mads.lat_active) else 4
+    can_sends.append(create_lka_steering(self.packer, self.frame, CS.acm_lka_hba_cmd, send_torque, CC.enabled, CC.latActive, self.mads, send_lka_act_toi, send_elk_request))
     if not blip:
       self.apply_torque_last = apply_torque
 
