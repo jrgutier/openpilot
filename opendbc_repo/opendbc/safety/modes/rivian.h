@@ -99,7 +99,7 @@ static bool rivian_tx_hook(const CANPacket_t *msg) {
     .dynamic_max_torque = true,
     .max_torque_lookup = {
       {9., 17., 17.},
-      {350, 350, 350},
+      {350, 250, 250},
     },
     .max_rate_up = 3,
     .max_rate_down = 5,
@@ -107,11 +107,6 @@ static bool rivian_tx_hook(const CANPacket_t *msg) {
     .driver_torque_multiplier = 2,
     .driver_torque_allowance = 100,
     .type = TorqueDriverLimited,
-    // One-frame blip: openpilot sends torque=0 and steer_req=0; panda holds last torque for rate limit
-    .min_valid_request_frames = 89,
-    .max_invalid_request_frames = 2,
-    .min_valid_request_rt_interval = 810000,  // 810ms min between blips
-    .has_steer_req_tolerance = true,
   };
 
   const LongitudinalLimits RIVIAN_LONG_LIMITS = {
