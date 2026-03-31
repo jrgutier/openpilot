@@ -88,7 +88,7 @@ bool steer_torque_cmd_checks(int desired_torque, int steer_req, const TorqueStee
                                         limits.driver_torque_allowance, limits.driver_torque_multiplier);
       } else {
         violation |= dist_to_meas_check(desired_torque, desired_torque_last, &torque_meas,
-                                        limits.max_rate_up, limits.max_rate_down, limits.max_torque_error);
+                                          limits.max_rate_up, limits.max_rate_down, limits.max_torque_error);
       }
     }
     // Only update last torque when request is active; blip frame (torque=0, steer_req=0) must not reset for rate limit
