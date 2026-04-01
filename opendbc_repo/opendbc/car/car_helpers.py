@@ -15,6 +15,20 @@ from opendbc.sunnypilot.car.interfaces import setup_interfaces as sunnypilot_int
 
 FRAME_FINGERPRINT = 100  # 1s
 
+_DEPRECATED_CAR_FINGERPRINT = {
+  "RIVIAN_R1_GEN1": "RIVIAN_R1S_GEN1",
+}
+
+
+def normalize_car_fingerprint(name: str | None) -> str | None:
+  """Map deprecated platform strings (manual FP / CarPlatformBundle)."""
+  if name is None:
+    return None
+  name = str(name).strip()
+  if not name:
+    return None
+  return _DEPRECATED_CAR_FINGERPRINT.get(name, name)
+
 
 def load_interfaces(brand_names):
   ret = {}
@@ -141,7 +155,8 @@ def fingerprint(can_recv: CanRecvCallable, can_send: CanSendCallable, set_obd_mu
     exact_match = exact_fw_match
 
   if fixed_fingerprint:
-    car_fingerprint = fixed_fingerprint
+    nf = normalize_car_fingerprint(str(fixed_fingerprint))
+    car_fingerprint = nf if nf is not None else str(fixed_fingerprint)
     source = CarParams.FingerprintSource.fixed
 
   carlog.error({"event": "fingerprinted", "car_fingerprint": str(car_fingerprint), "source": source, "fuzzy": not exact_match,
@@ -160,6 +175,10 @@ def get_car(can_recv: CanRecvCallable, can_send: CanSendCallable, set_obd_multip
   if candidate is None:
     carlog.error({"event": "car doesn't match any fingerprints", "fingerprints": repr(fingerprints)})
     candidate = "MOCK"
+  else:
+    n = normalize_car_fingerprint(candidate)
+    if n is not None:
+      candidate = n
 
   CarInterface = interfaces[candidate]
   CP: CarParams = CarInterface.get_params(candidate, fingerprints, car_fw, alpha_long_allowed, is_release, docs=False)
