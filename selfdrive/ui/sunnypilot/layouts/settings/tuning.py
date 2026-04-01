@@ -23,7 +23,7 @@ class TuningLayout(Widget):
       title=lambda: tr("Kp Low Speed"),
       param="KpLowSpeed",
       description=lambda: tr("Proportional gain multiplier at low speeds (6.7 m/s). Used in custom error calculation."),
-      min_value=50,
+      min_value=10,
       max_value=500,
       value_change_step=5,
       label_callback=(lambda x: f"{x / 100:.2f}"),
