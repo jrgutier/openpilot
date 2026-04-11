@@ -190,7 +190,7 @@ def test_known_params_metadata():
   lp = metadata.get("LongitudinalPersonality")
   assert lp is not None
   assert "options" in lp
-  assert len(lp["options"]) == 3
+  assert len(lp["options"]) == 4
   assert lp["options"][0]["label"] == "Aggressive"
   assert lp["options"][0]["value"] == 0
 
