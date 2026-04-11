@@ -453,7 +453,8 @@ class SelfdriveD(CruiseHelper):
     if self.CP.openpilotLongitudinalControl:
       if any(not be.pressed and be.type == ButtonType.gapAdjustCruise for be in CS.buttonEvents):
         if not self.experimental_mode_switched:
-          self.personality = (self.personality - 1) % 3
+          # Cycle order: aggressive(0) -> veryAggressive(3) -> relaxed(2) -> standard(1)
+          self.personality = (self.personality - 1) % 4
           self.params.put_nonblocking('LongitudinalPersonality', self.personality)
           self.events.add(EventName.personalityChanged)
         self.experimental_mode_switched = False
@@ -598,7 +599,12 @@ class SelfdriveD(CruiseHelper):
       self.is_ldw_enabled = self.params.get_bool("IsLdwEnabled")
       self.disengage_on_accelerator = self.params.get_bool("DisengageOnAccelerator")
       self.experimental_mode = self.params.get_bool("ExperimentalMode") and self.CP.openpilotLongitudinalControl
-      self.personality = self.params.get("LongitudinalPersonality", return_default=True)
+      self.personality = get_sanitize_int_param(
+        "LongitudinalPersonality",
+        min(log.LongitudinalPersonality.schema.enumerants.values()),
+        max(log.LongitudinalPersonality.schema.enumerants.values()),
+        self.params
+      )
 
       self.mads.read_params()
       time.sleep(0.1)
