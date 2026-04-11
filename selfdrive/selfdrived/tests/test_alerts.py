@@ -8,7 +8,7 @@ from cereal import log, car
 from cereal.messaging import SubMaster
 from openpilot.common.basedir import BASEDIR
 from openpilot.common.params import Params
-from openpilot.selfdrive.selfdrived.events import Alert, EVENTS, ET
+from openpilot.selfdrive.selfdrived.events import Alert, EVENTS, ET, personality_changed_alert
 from openpilot.selfdrive.selfdrived.alertmanager import set_offroad_alert
 from openpilot.selfdrive.test.process_replay.process_replay import CONFIGS
 
@@ -103,6 +103,17 @@ class TestAlerts:
 
         if event_type not in (ET.WARNING, ET.PERMANENT, ET.PRE_ENABLE):
           assert a.creation_delay == 0.
+
+  def test_personality_changed_alert_text(self):
+    expected = {
+      log.LongitudinalPersonality.aggressive: "Driving Personality: Aggressive",
+      log.LongitudinalPersonality.standard: "Driving Personality: Standard",
+      log.LongitudinalPersonality.relaxed: "Driving Personality: Relaxed",
+      log.LongitudinalPersonality.veryAggressive: "Driving Personality: Very Aggressive",
+    }
+    for personality, expected_text in expected.items():
+      alert = personality_changed_alert(self.CP, self.CS, self.sm, metric=False, soft_disable_time=100, personality=personality)
+      assert alert.alert_text_1 == expected_text, f"Expected '{expected_text}', got '{alert.alert_text_1}'"
 
   def test_offroad_alerts(self):
     params = Params()

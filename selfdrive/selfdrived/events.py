@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import math
 import os
+import re
 
 from cereal import log, car
 import cereal.messaging as messaging
@@ -200,8 +201,10 @@ def longitudinal_maneuver_alert(CP: car.CarParams, CS: car.CarState, sm: messagi
 
 
 def personality_changed_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster, metric: bool, soft_disable_time: int, personality) -> Alert:
-  personality = str(personality).title()
-  return NormalPermanentAlert(f"Driving Personality: {personality}", duration=1.5)
+  # capnp enum values stringify to their int; look up the camelCase name from the schema instead.
+  name = next((n for n, v in log.LongitudinalPersonality.schema.enumerants.items() if v == personality), str(personality))
+  readable = re.sub(r'(?<=[a-z])(?=[A-Z])', ' ', name).title()
+  return NormalPermanentAlert(f"Driving Personality: {readable}", duration=1.5)
 
 
 def invalid_lkas_setting_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster, metric: bool, soft_disable_time: int, personality) -> Alert:
