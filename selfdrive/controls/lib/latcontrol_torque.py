@@ -35,6 +35,12 @@ JERK_GAIN = 0.3
 LAT_ACCEL_REQUEST_BUFFER_SECONDS = 1.0
 VERSION = 1
 
+# UI-tunable Kp multipliers layered on top of the PID's internal KP_INTERP schedule
+# to tame oscillation from the stock gains without replacing them.
+KP_UI_PARAMS = ("KpLowSpeed", "KpMidSpeed", "KpHighSpeed")
+KP_UI_SPEED_BREAKPOINTS = (6.7, 15.6, 33.5)  # m/s, ~15/35/75 mph
+KP_UI_MIN, KP_UI_MAX = 0.1, 5.0  # matches Tuning menu slider range
+
 class LatControlTorque(LatControl):
   def __init__(self, CP, CP_SP, CI, dt):
     super().__init__(CP, CP_SP, CI, dt)
@@ -49,15 +55,22 @@ class LatControlTorque(LatControl):
     self.lookahead_frames = int(JERK_LOOKAHEAD_SECONDS / self.dt)
     self.jerk_filter = FirstOrderFilter(0.0, 1 / (2 * np.pi * LP_FILTER_CUTOFF_HZ), self.dt)
 
-    # UI-configurable Kp tuning (Tuning menu: KpLowSpeed / KpHighSpeed)
     self._params = Params()
-    self.kp_low_speed = float(self._params.get("KpLowSpeed") or "1.0")
-    self.kp_high_speed = float(self._params.get("KpHighSpeed") or "1.0")
+    self.kp_multipliers = self._load_kp_multipliers(self._params.get)
     self._param_update_frame = 0
-    self.kp_low_speed_lim = 6.7   # m/s
-    self.kp_high_speed_lim = 33.5  # m/s
 
     self.extension = LatControlTorqueExt(self, CP, CP_SP, CI)
+
+  @staticmethod
+  def _load_kp_multipliers(param_getter) -> list[float]:
+    def _read(key: str) -> float:
+      raw = param_getter(key)
+      try:
+        val = float(raw) if raw is not None else 1.0
+      except (TypeError, ValueError):
+        val = 1.0
+      return max(KP_UI_MIN, min(KP_UI_MAX, val))
+    return [_read(k) for k in KP_UI_PARAMS]
 
   def update_live_torque_params(self, latAccelFactor, latAccelOffset, friction):
     self.torque_params.latAccelFactor = latAccelFactor
@@ -77,11 +90,7 @@ class LatControlTorque(LatControl):
     # Re-read Tuning menu params periodically (~6 s at 50 Hz)
     self._param_update_frame += 1
     if self._param_update_frame % 300 == 0:
-      try:
-        self.kp_low_speed = float(self._params.get("KpLowSpeed") or "1.0")
-        self.kp_high_speed = float(self._params.get("KpHighSpeed") or "1.0")
-      except (TypeError, ValueError):
-        pass
+      self.kp_multipliers = self._load_kp_multipliers(self._params.get)
 
     pid_log = log.ControlsState.LateralTorqueState.new_message()
     pid_log.version = VERSION
@@ -112,8 +121,8 @@ class LatControlTorque(LatControl):
       output_torque = 0.0
       pid_log.active = False
     else:
-      # Kp scaling from Tuning menu (interpolate by speed)
-      kp_working = np.interp(CS.vEgo, [self.kp_low_speed_lim, self.kp_high_speed_lim], [self.kp_low_speed, self.kp_high_speed])
+      # kp_working layers the UI Kp multipliers over the PID's internal KP_INTERP schedule
+      kp_working = np.interp(CS.vEgo, KP_UI_SPEED_BREAKPOINTS, self.kp_multipliers)
       # do error correction in lateral acceleration space, convert at end to handle non-linear torque responses correctly
       pid_log.error = float(error * kp_working)
 

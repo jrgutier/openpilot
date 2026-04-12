@@ -11,7 +11,7 @@ from openpilot.system.ui.widgets import Widget
 
 
 class TuningLayout(Widget):
-  """Tuning panel: Kp Low Speed / Kp High Speed (matches 2a00dafc0 Qt tuning panel)."""
+  """Tuning panel: 3-point Kp speed-dependent multiplier tuning (Low / Mid / High)."""
 
   def __init__(self):
     super().__init__()
@@ -29,6 +29,16 @@ class TuningLayout(Widget):
       label_callback=(lambda x: f"{x / 100:.2f}"),
       use_float_scaling=True,
     )
+    self._kp_mid_speed = option_item_sp(
+      title=lambda: tr("Kp Mid Speed"),
+      param="KpMidSpeed",
+      description=lambda: tr("Proportional gain multiplier at mid speeds (15.6 m/s / ~35 mph). Multiplied on top of the internal PID schedule."),
+      min_value=10,
+      max_value=500,
+      value_change_step=5,
+      label_callback=(lambda x: f"{x / 100:.2f}"),
+      use_float_scaling=True,
+    )
     self._kp_high_speed = option_item_sp(
       title=lambda: tr("Kp High Speed"),
       param="KpHighSpeed",
@@ -39,12 +49,13 @@ class TuningLayout(Widget):
       label_callback=(lambda x: f"{x / 100:.2f}"),
       use_float_scaling=True,
     )
-    return [self._kp_low_speed, self._kp_high_speed]
+    return [self._kp_low_speed, self._kp_mid_speed, self._kp_high_speed]
 
   def _update_state(self):
     super()._update_state()
     # Allow tuning Kp while on road so adjustments can be made during drive
     self._kp_low_speed.action_item.set_enabled(True)
+    self._kp_mid_speed.action_item.set_enabled(True)
     self._kp_high_speed.action_item.set_enabled(True)
 
   def _render(self, rect):
