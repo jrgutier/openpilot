@@ -34,7 +34,7 @@ class TestRivianSafetyBase(common.CarSafetyTest, common.DriverTorqueSteeringSafe
   MAX_RATE_UP = 3
   MAX_RATE_DOWN = 5
 
-  MAX_RT_DELTA = 125
+  MAX_RT_DELTA = 94
 
   DRIVER_TORQUE_ALLOWANCE = 100
   DRIVER_TORQUE_FACTOR = 2
