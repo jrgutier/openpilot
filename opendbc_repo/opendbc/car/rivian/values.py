@@ -92,7 +92,7 @@ def narrow_rivian_fw_match_by_vin(matches: set[str], vin: str) -> set[str]:
   vin_candidates = match_fw_to_car_fuzzy({}, vin, {})
   if len(vin_candidates) == 1:
     return (matches - RIVIAN_GEN1_PLATFORMS) | vin_candidates
-  return matches - RIVIAN_GEN1_PLATFORMS
+  return matches  # can't narrow — keep both R1T/R1S rather than removing all
 
 
 RIVIAN_VERSION_REQUEST = bytes([uds.SERVICE_TYPE.READ_DATA_BY_IDENTIFIER]) + \

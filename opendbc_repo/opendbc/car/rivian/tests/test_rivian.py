@@ -22,6 +22,11 @@ class TestRivian:
     assert narrow_rivian_fw_match_by_vin({r1t, r1s}, "7PDABCD12R1234567") == {r1s}
     assert narrow_rivian_fw_match_by_vin({r1t, r1s}, "7FCABCD12R1234567") == {r1t}
 
+  def test_narrow_rivian_fallback_on_bad_vin(self):
+    r1t, r1s = str(CAR.RIVIAN_R1T_GEN1), str(CAR.RIVIAN_R1S_GEN1)
+    # WMI "1FC" is not a Rivian WMI — vin_candidates will be empty, should keep both platforms
+    assert narrow_rivian_fw_match_by_vin({r1t, r1s}, "1FCABCD12N1234567") == {r1t, r1s}
+
   def test_full_match_fw_to_car_empty_fw_vin_only(self):
     vin = "7PDABCD12R1234567"
     exact, matches = match_fw_to_car([], vin)
