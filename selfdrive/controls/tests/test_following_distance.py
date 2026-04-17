@@ -1,4 +1,3 @@
-import numpy as np
 import pytest
 import itertools
 from openpilot.common.parameterized import parameterized_class
@@ -6,7 +5,7 @@ from openpilot.common.parameterized import parameterized_class
 from cereal import log
 
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import get_safe_obstacle_distance, get_stopped_equivalence_factor, get_T_FOLLOW, \
-  JERK_FACTOR_VA_BP, JERK_FACTOR_VA_V
+  get_jerk_factor
 from openpilot.selfdrive.test.longitudinal_maneuvers.maneuver import Maneuver
 
 
@@ -43,21 +42,13 @@ class TestFollowingDistance:
   def test_following_distance(self):
     v_lead = float(self.speed)
     simulation_steady_state = run_following_distance_simulation(v_lead, e2e=self.e2e, personality=self.personality)
-    # For veryAggressive, t_follow is speed-dependent. At steady-state all MPC horizon
-    # velocities converge to v_lead, so the per-timestep t_follow collapses to a scalar.
-    correct_steady_state = desired_follow_distance(v_lead, v_lead, get_T_FOLLOW(self.personality, v_ego=v_lead))
+    correct_steady_state = desired_follow_distance(v_lead, v_lead, get_T_FOLLOW(self.personality))
     err_ratio = 0.2 if self.e2e else 0.1
     abs_err_margin = 0.5 if v_lead > 0.0 else 1.15
     assert simulation_steady_state == pytest.approx(correct_steady_state, abs=err_ratio * correct_steady_state + abs_err_margin)
 
 
-class TestVeryAggressiveJerkFactor:
-  def test_jerk_factor_increases_with_speed(self):
-    """Speed-dependent jerk factor must increase with speed: responsive launch, smooth approach."""
-    jf_stop = float(np.interp(0.0, JERK_FACTOR_VA_BP, JERK_FACTOR_VA_V))
-    jf_mid = float(np.interp(10.0, JERK_FACTOR_VA_BP, JERK_FACTOR_VA_V))
-    jf_highway = float(np.interp(30.0, JERK_FACTOR_VA_BP, JERK_FACTOR_VA_V))
-
-    assert jf_stop < jf_mid < jf_highway
-    assert jf_stop < 0.5, "Low-speed jerk factor must be below aggressive (0.5) for responsive launch"
-    assert jf_highway >= 0.5, "High-speed jerk factor must be at or above aggressive (0.5) for smooth approach"
+class TestJerkFactorSafetyFloor:
+  def test_very_aggressive_jerk_factor_not_too_low(self):
+    """Jerk factor must stay above safety floor to ensure MPC convergence at stop."""
+    assert get_jerk_factor(log.LongitudinalPersonality.veryAggressive) >= 0.15

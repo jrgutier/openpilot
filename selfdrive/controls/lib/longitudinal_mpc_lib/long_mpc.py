@@ -59,19 +59,8 @@ CRUISE_MIN_ACCEL = -1.2
 CRUISE_MAX_ACCEL = 1.6
 MIN_X_LEAD_FACTOR = 0.5
 
-# veryAggressive speed-dependent t_follow breakpoints
-T_FOLLOW_VERY_AGGRESSIVE_BP = [0., 10., 30.]
-T_FOLLOW_VERY_AGGRESSIVE_V = [0.5, 0.7, 0.9]
-
-# veryAggressive speed-dependent jerk factor: responsive launch, smooth approach
-JERK_FACTOR_VA_BP = [0., 5., 30.]
-JERK_FACTOR_VA_V = [0.1, 0.3, 0.6]
-
 # A_CHANGE_COST time-taper: full weight for first second, ramps to zero by 2s
 A_CHANGE_TAPER = np.interp(T_IDXS[:N], [0.0, 1.0, 2.0], [1.0, 1.0, 0.0])
-
-# Constraint slack cost weights (constant across all personalities)
-_ZL_DEFAULT = np.array([LIMIT_COST, LIMIT_COST, LIMIT_COST, DANGER_ZONE_COST])
 
 def get_jerk_factor(personality=log.LongitudinalPersonality.standard):
   if personality==log.LongitudinalPersonality.relaxed:
@@ -81,19 +70,13 @@ def get_jerk_factor(personality=log.LongitudinalPersonality.standard):
   elif personality==log.LongitudinalPersonality.aggressive:
     return 0.5
   elif personality==log.LongitudinalPersonality.veryAggressive:
-    # Scalar fallback only; per-timestep logic in set_weights()
-    return 0.35
+    return 0.2
   else:
     raise NotImplementedError("Longitudinal personality not supported")
 
 
-def get_T_FOLLOW(personality=log.LongitudinalPersonality.standard, v_ego=None):
-  """Return time headway for the given personality.
-
-  For veryAggressive, t_follow varies with speed (closer at low speed, wider at highway).
-  Pass v_ego to get the speed-dependent value; v_ego=None returns the highway fallback (0.9s).
-  Other personalities ignore v_ego and return a fixed scalar.
-  """
+def get_T_FOLLOW(personality=log.LongitudinalPersonality.standard):
+  """Return fixed time headway scalar for the given personality."""
   if personality==log.LongitudinalPersonality.relaxed:
     return 1.75
   elif personality==log.LongitudinalPersonality.standard:
@@ -101,9 +84,7 @@ def get_T_FOLLOW(personality=log.LongitudinalPersonality.standard, v_ego=None):
   elif personality==log.LongitudinalPersonality.aggressive:
     return 1.25
   elif personality==log.LongitudinalPersonality.veryAggressive:
-    if v_ego is None:
-      return T_FOLLOW_VERY_AGGRESSIVE_V[-1]
-    return float(np.interp(v_ego, T_FOLLOW_VERY_AGGRESSIVE_BP, T_FOLLOW_VERY_AGGRESSIVE_V))
+    return 0.8
   else:
     raise NotImplementedError("Longitudinal personality not supported")
 
@@ -295,25 +276,11 @@ class LongitudinalMpc:
       self.solver.cost_set(i, 'Zl', Zl)
 
   def set_weights(self, prev_accel_constraint=True, personality=log.LongitudinalPersonality.standard):
+    jerk_factor = get_jerk_factor(personality)
     a_change_cost = A_CHANGE_COST if prev_accel_constraint else 0
+    cost_weights = [X_EGO_OBSTACLE_COST, X_EGO_COST, V_EGO_COST, A_EGO_COST, jerk_factor * a_change_cost, jerk_factor * J_EGO_COST]
     constraint_cost_weights = [LIMIT_COST, LIMIT_COST, LIMIT_COST, DANGER_ZONE_COST]
-
-    if personality == log.LongitudinalPersonality.veryAggressive:
-      # Per-timestep jerk factor from previous velocity solution (same warm-start as t_follow)
-      jf_arr = np.interp(self.v_solution[:N], JERK_FACTOR_VA_BP, JERK_FACTOR_VA_V)
-      w44 = jf_arr * a_change_cost * A_CHANGE_TAPER
-      w55 = jf_arr * J_EGO_COST
-      W = np.asfortranarray(np.diag([X_EGO_OBSTACLE_COST, X_EGO_COST, V_EGO_COST, A_EGO_COST, 1.0, 1.0]))
-      for i in range(N):
-        W[4,4] = w44[i]
-        W[5,5] = w55[i]
-        self.solver.cost_set(i, 'W', W)
-        self.solver.cost_set(i, 'Zl', _ZL_DEFAULT)
-      self.solver.cost_set(N, 'W', np.copy(W[:COST_E_DIM, :COST_E_DIM]))
-    else:
-      jerk_factor = get_jerk_factor(personality)
-      cost_weights = [X_EGO_OBSTACLE_COST, X_EGO_COST, V_EGO_COST, A_EGO_COST, jerk_factor * a_change_cost, jerk_factor * J_EGO_COST]
-      self.set_cost_weights(cost_weights, constraint_cost_weights)
+    self.set_cost_weights(cost_weights, constraint_cost_weights)
 
   def set_cur_state(self, v, a):
     v_prev = self.x0[1]
@@ -357,11 +324,7 @@ class LongitudinalMpc:
   def update(self, radarstate, v_cruise, personality=log.LongitudinalPersonality.standard):
     v_ego = self.x0[1]
 
-    if personality == log.LongitudinalPersonality.veryAggressive:
-      # Per-timestep t_follow from previous cycle's velocity solution (warm-start; one-cycle lag is intentional)
-      t_follow = np.interp(self.v_solution, T_FOLLOW_VERY_AGGRESSIVE_BP, T_FOLLOW_VERY_AGGRESSIVE_V)
-    else:
-      t_follow = get_T_FOLLOW(personality)
+    t_follow = get_T_FOLLOW(personality)
 
     self.status = radarstate.leadOne.status or radarstate.leadTwo.status
 
