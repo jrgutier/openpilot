@@ -1,5 +1,5 @@
-"""Tests for LatControlTorque._load_kp_multipliers() covering None default,
-happy path, bad-string fallback, and out-of-range clamp."""
+"""Tests for LatControlTorque param loading (_load_kp_multipliers and _read_param)
+covering None default, happy path, bad-string fallback, and out-of-range clamp."""
 from openpilot.selfdrive.controls.lib.latcontrol_torque import LatControlTorque, KP_UI_MIN, KP_UI_MAX
 
 

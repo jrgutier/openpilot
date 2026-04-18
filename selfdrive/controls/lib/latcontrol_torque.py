@@ -35,11 +35,20 @@ JERK_GAIN = 0.3
 LAT_ACCEL_REQUEST_BUFFER_SECONDS = 1.0
 VERSION = 1
 
+# Crosswind damping: error LP filter, derivative-on-measurement, integrator decay
+KD = 0.1
+KD_INTERP = [0.0, 0.0, 0.0, 0.0, 0.0, 0.02, 0.04, 0.07, KD]
+ERROR_LP_FILTER_HZ = 0.8
+MEASUREMENT_LP_FILTER_HZ = 3.0
+INTEGRATOR_DECAY_SPEED_BP = [10.0, 20.0, 30.0]
+INTEGRATOR_DECAY_FACTOR = [1.0, 0.998, 0.995]
+
 # UI-tunable Kp multipliers layered on top of the PID's internal KP_INTERP schedule
 # to tame oscillation from the stock gains without replacing them.
 KP_UI_PARAMS = ("KpLowSpeed", "KpMidSpeed", "KpHighSpeed")
 KP_UI_SPEED_BREAKPOINTS = (6.7, 15.6, 33.5)  # m/s, ~15/35/75 mph
 KP_UI_MIN, KP_UI_MAX = 0.1, 5.0  # matches Tuning menu slider range
+KD_UI_MIN, KD_UI_MAX = 0.0, 3.0
 
 class LatControlTorque(LatControl):
   def __init__(self, CP, CP_SP, CI, dt):
@@ -47,7 +56,7 @@ class LatControlTorque(LatControl):
     self.torque_params = CP.lateralTuning.torque.as_builder()
     self.torque_from_lateral_accel = CI.torque_from_lateral_accel()
     self.lateral_accel_from_torque = CI.lateral_accel_from_torque()
-    self.pid = PIDController([INTERP_SPEEDS, KP_INTERP], KI, rate=1/self.dt)
+    self.pid = PIDController([INTERP_SPEEDS, KP_INTERP], KI, k_d=[INTERP_SPEEDS, KD_INTERP], rate=1/self.dt)
     self.update_limits()
     self.steering_angle_deadzone_deg = self.torque_params.steeringAngleDeadzoneDeg
     self.lat_accel_request_buffer_len = int(LAT_ACCEL_REQUEST_BUFFER_SECONDS / self.dt)
@@ -55,22 +64,38 @@ class LatControlTorque(LatControl):
     self.lookahead_frames = int(JERK_LOOKAHEAD_SECONDS / self.dt)
     self.jerk_filter = FirstOrderFilter(0.0, 1 / (2 * np.pi * LP_FILTER_CUTOFF_HZ), self.dt)
 
+    # Crosswind damping filters
+    self.error_filter = FirstOrderFilter(0.0, 1 / (2 * np.pi * ERROR_LP_FILTER_HZ), self.dt)
+    self.measurement_filter = FirstOrderFilter(0.0, 1 / (2 * np.pi * MEASUREMENT_LP_FILTER_HZ), self.dt, initialized=False)
+    self.prev_filtered_meas = None
+
     self._params = Params()
     self.kp_multipliers = self._load_kp_multipliers(self._params.get)
+    self.kd_multiplier = 1.0
     self._param_update_frame = 0
 
     self.extension = LatControlTorqueExt(self, CP, CP_SP, CI)
 
   @staticmethod
+  def _read_param(param_getter, key: str, lo: float, hi: float, default: float = 1.0) -> float:
+    raw = param_getter(key)
+    try:
+      val = float(raw) if raw is not None else default
+    except (TypeError, ValueError):
+      val = default
+    return max(lo, min(hi, val))
+
+  @staticmethod
   def _load_kp_multipliers(param_getter) -> list[float]:
-    def _read(key: str) -> float:
-      raw = param_getter(key)
-      try:
-        val = float(raw) if raw is not None else 1.0
-      except (TypeError, ValueError):
-        val = 1.0
-      return max(KP_UI_MIN, min(KP_UI_MAX, val))
-    return [_read(k) for k in KP_UI_PARAMS]
+    return [LatControlTorque._read_param(param_getter, k, KP_UI_MIN, KP_UI_MAX) for k in KP_UI_PARAMS]
+
+  def reset(self):
+    super().reset()
+    self.error_filter.x = 0.0
+    self.error_filter.initialized = False
+    self.measurement_filter.x = 0.0
+    self.measurement_filter.initialized = False
+    self.prev_filtered_meas = None
 
   def update_live_torque_params(self, latAccelFactor, latAccelOffset, friction):
     self.torque_params.latAccelFactor = latAccelFactor
@@ -91,6 +116,7 @@ class LatControlTorque(LatControl):
     self._param_update_frame += 1
     if self._param_update_frame % 300 == 0:
       self.kp_multipliers = self._load_kp_multipliers(self._params.get)
+      self.kd_multiplier = self._read_param(self._params.get, "KdHighSpeed", KD_UI_MIN, KD_UI_MAX)
 
     pid_log = log.ControlsState.LateralTorqueState.new_message()
     pid_log.version = VERSION
@@ -121,14 +147,27 @@ class LatControlTorque(LatControl):
       output_torque = 0.0
       pid_log.active = False
     else:
-      # kp_working layers the UI Kp multipliers over the PID's internal KP_INTERP schedule
+      filtered_error = self.error_filter.update(error)
+
+      # Derivative-on-measurement avoids derivative kick on setpoint changes (e.g. lane change)
+      filtered_meas = self.measurement_filter.update(measurement)
+      if self.prev_filtered_meas is None:
+        error_rate = 0.0
+      else:
+        error_rate = -(filtered_meas - self.prev_filtered_meas) / self.dt
+      self.prev_filtered_meas = filtered_meas
+
       kp_working = np.interp(CS.vEgo, KP_UI_SPEED_BREAKPOINTS, self.kp_multipliers)
-      # do error correction in lateral acceleration space, convert at end to handle non-linear torque responses correctly
-      pid_log.error = float(error * kp_working)
+      pid_log.error = float(filtered_error * kp_working)
 
       freeze_integrator = steer_limited_by_safety or CS.steeringPressed or CS.vEgo < 2
-      output_lataccel = self.pid.update(pid_log.error, speed=CS.vEgo, feedforward=ff, freeze_integrator=freeze_integrator)
+      output_lataccel = self.pid.update(pid_log.error, error_rate=error_rate * self.kd_multiplier,
+                                        speed=CS.vEgo, feedforward=ff, freeze_integrator=freeze_integrator)
       output_torque = self.torque_from_lateral_accel(output_lataccel, self.torque_params)
+
+      if not freeze_integrator:
+        decay = float(np.interp(CS.vEgo, INTEGRATOR_DECAY_SPEED_BP, INTEGRATOR_DECAY_FACTOR))
+        self.pid.i *= decay
 
       # Lateral acceleration torque controller extension updates
       # Overrides pid_log.error and output_torque
