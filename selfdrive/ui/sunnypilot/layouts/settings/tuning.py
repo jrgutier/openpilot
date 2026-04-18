@@ -11,7 +11,7 @@ from openpilot.system.ui.widgets import Widget
 
 
 class TuningLayout(Widget):
-  """Tuning panel: 3-point Kp speed-dependent multiplier tuning (Low / Mid / High)."""
+  """Tuning panel: Kp speed-dependent multiplier tuning (Low / Mid / High) + Kd damping."""
 
   def __init__(self):
     super().__init__()
@@ -49,14 +49,25 @@ class TuningLayout(Widget):
       label_callback=(lambda x: f"{x / 100:.2f}"),
       use_float_scaling=True,
     )
-    return [self._kp_low_speed, self._kp_mid_speed, self._kp_high_speed]
+    self._kd_high_speed = option_item_sp(
+      title=lambda: tr("Kd High Speed"),
+      param="KdHighSpeed",
+      description=lambda: tr("Derivative damping multiplier at highway speeds. Higher values reduce crosswind oscillation. 0 disables. Default 1.0."),
+      min_value=0,
+      max_value=300,
+      value_change_step=5,
+      label_callback=(lambda x: f"{x / 100:.2f}"),
+      use_float_scaling=True,
+    )
+    return [self._kp_low_speed, self._kp_mid_speed, self._kp_high_speed, self._kd_high_speed]
 
   def _update_state(self):
     super()._update_state()
-    # Allow tuning Kp while on road so adjustments can be made during drive
+    # Allow tuning while on road so adjustments can be made during drive
     self._kp_low_speed.action_item.set_enabled(True)
     self._kp_mid_speed.action_item.set_enabled(True)
     self._kp_high_speed.action_item.set_enabled(True)
+    self._kd_high_speed.action_item.set_enabled(True)
 
   def _render(self, rect):
     self._scroller.render(rect)
