@@ -49,6 +49,26 @@ class TuningLayout(Widget):
       label_callback=(lambda x: f"{x / 100:.2f}"),
       use_float_scaling=True,
     )
+    self._kd_low_speed = option_item_sp(
+      title=lambda: tr("Kd Low Speed"),
+      param="KdLowSpeed",
+      description=lambda: tr("Derivative damping multiplier at low speeds (6.7 m/s anchor). Most effective between 8-14 m/s where Kd ramps in via interpolation; effect at the 6.7 m/s anchor itself is near-zero since base Kd is ~0.014 there. Default 1.0."),
+      min_value=0,
+      max_value=300,
+      value_change_step=5,
+      label_callback=(lambda x: f"{x / 100:.2f}"),
+      use_float_scaling=True,
+    )
+    self._kd_mid_speed = option_item_sp(
+      title=lambda: tr("Kd Mid Speed"),
+      param="KdMidSpeed",
+      description=lambda: tr("Derivative damping multiplier at mid speeds (15.6 m/s / ~35 mph). Lower values reduce D-term jitter if crosswind isn't a factor in this speed range. Default 1.0."),
+      min_value=0,
+      max_value=300,
+      value_change_step=5,
+      label_callback=(lambda x: f"{x / 100:.2f}"),
+      use_float_scaling=True,
+    )
     self._kd_high_speed = option_item_sp(
       title=lambda: tr("Kd High Speed"),
       param="KdHighSpeed",
@@ -59,7 +79,8 @@ class TuningLayout(Widget):
       label_callback=(lambda x: f"{x / 100:.2f}"),
       use_float_scaling=True,
     )
-    return [self._kp_low_speed, self._kp_mid_speed, self._kp_high_speed, self._kd_high_speed]
+    return [self._kp_low_speed, self._kp_mid_speed, self._kp_high_speed,
+            self._kd_low_speed, self._kd_mid_speed, self._kd_high_speed]
 
   def _update_state(self):
     super()._update_state()
@@ -67,6 +88,8 @@ class TuningLayout(Widget):
     self._kp_low_speed.action_item.set_enabled(True)
     self._kp_mid_speed.action_item.set_enabled(True)
     self._kp_high_speed.action_item.set_enabled(True)
+    self._kd_low_speed.action_item.set_enabled(True)
+    self._kd_mid_speed.action_item.set_enabled(True)
     self._kd_high_speed.action_item.set_enabled(True)
 
   def _render(self, rect):

@@ -43,10 +43,11 @@ MEASUREMENT_LP_FILTER_HZ = 3.0
 INTEGRATOR_DECAY_SPEED_BP = [10.0, 20.0, 30.0]
 INTEGRATOR_DECAY_FACTOR = [1.0, 0.998, 0.995]
 
-# UI-tunable Kp multipliers layered on top of the PID's internal KP_INTERP schedule
-# to tame oscillation from the stock gains without replacing them.
+# UI-tunable Kp/Kd multipliers layered on top of the PID's internal KP_INTERP / KD_INTERP
+# schedules to tame oscillation from the stock gains without replacing them.
 KP_UI_PARAMS = ("KpLowSpeed", "KpMidSpeed", "KpHighSpeed")
-KP_UI_SPEED_BREAKPOINTS = (6.7, 15.6, 33.5)  # m/s, ~15/35/75 mph
+KD_UI_PARAMS = ("KdLowSpeed", "KdMidSpeed", "KdHighSpeed")
+UI_SPEED_BREAKPOINTS = (6.7, 15.6, 33.5)  # m/s, ~15/35/75 mph — shared by Kp and Kd
 KP_UI_MIN, KP_UI_MAX = 0.1, 5.0  # matches Tuning menu slider range
 KD_UI_MIN, KD_UI_MAX = 0.0, 3.0
 
@@ -71,7 +72,7 @@ class LatControlTorque(LatControl):
 
     self._params = Params()
     self.kp_multipliers = self._load_kp_multipliers(self._params.get)
-    self.kd_multiplier = 1.0
+    self.kd_multipliers = self._load_kd_multipliers(self._params.get)
     self._param_update_frame = 0
 
     self.extension = LatControlTorqueExt(self, CP, CP_SP, CI)
@@ -86,8 +87,16 @@ class LatControlTorque(LatControl):
     return max(lo, min(hi, val))
 
   @staticmethod
+  def _load_multipliers(param_getter, params, lo: float, hi: float) -> list[float]:
+    return [LatControlTorque._read_param(param_getter, k, lo, hi) for k in params]
+
+  @staticmethod
   def _load_kp_multipliers(param_getter) -> list[float]:
-    return [LatControlTorque._read_param(param_getter, k, KP_UI_MIN, KP_UI_MAX) for k in KP_UI_PARAMS]
+    return LatControlTorque._load_multipliers(param_getter, KP_UI_PARAMS, KP_UI_MIN, KP_UI_MAX)
+
+  @staticmethod
+  def _load_kd_multipliers(param_getter) -> list[float]:
+    return LatControlTorque._load_multipliers(param_getter, KD_UI_PARAMS, KD_UI_MIN, KD_UI_MAX)
 
   def reset(self):
     super().reset()
@@ -116,7 +125,7 @@ class LatControlTorque(LatControl):
     self._param_update_frame += 1
     if self._param_update_frame % 300 == 0:
       self.kp_multipliers = self._load_kp_multipliers(self._params.get)
-      self.kd_multiplier = self._read_param(self._params.get, "KdHighSpeed", KD_UI_MIN, KD_UI_MAX)
+      self.kd_multipliers = self._load_kd_multipliers(self._params.get)
 
     pid_log = log.ControlsState.LateralTorqueState.new_message()
     pid_log.version = VERSION
@@ -157,11 +166,12 @@ class LatControlTorque(LatControl):
         error_rate = -(filtered_meas - self.prev_filtered_meas) / self.dt
       self.prev_filtered_meas = filtered_meas
 
-      kp_working = np.interp(CS.vEgo, KP_UI_SPEED_BREAKPOINTS, self.kp_multipliers)
+      kp_working = np.interp(CS.vEgo, UI_SPEED_BREAKPOINTS, self.kp_multipliers)
+      kd_working = float(np.interp(CS.vEgo, UI_SPEED_BREAKPOINTS, self.kd_multipliers))
       pid_log.error = float(filtered_error * kp_working)
 
       freeze_integrator = steer_limited_by_safety or CS.steeringPressed or CS.vEgo < 2
-      output_lataccel = self.pid.update(pid_log.error, error_rate=error_rate * self.kd_multiplier,
+      output_lataccel = self.pid.update(pid_log.error, error_rate=error_rate * kd_working,
                                         speed=CS.vEgo, feedforward=ff, freeze_integrator=freeze_integrator)
       output_torque = self.torque_from_lateral_accel(output_lataccel, self.torque_params)
 
