@@ -45,13 +45,11 @@ def main():
   print(f"Loading {len(rlog_paths)} segments:")
   for p in rlog_paths:
     print(f"  {p}")
+  if len(rlog_paths) > 8:
+    print(f"WARNING: {len(rlog_paths)} segments will consume ~{len(rlog_paths) * 50} MB of RAM "
+          f"(and ~{len(rlog_paths) * 100} MB post-migration). Consider loading <=8 at a time.")
 
-  all_data = []
-  for p in rlog_paths:
-    for m in LogReader(p):
-      if m.which() in ("can", "sendcan"):
-        continue
-      all_data.append(m)
+  all_data = [m for m in LogReader(rlog_paths) if m.which() not in ("can", "sendcan")]
   if not args.no_migration:
     all_data = migrate_all(all_data)
 

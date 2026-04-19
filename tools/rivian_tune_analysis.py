@@ -21,6 +21,15 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from openpilot.tools.lib.logreader import LogReader
 
+try:
+  import matplotlib
+  matplotlib.use("Agg")
+  import matplotlib.pyplot as plt
+  HAS_MPL = True
+except ImportError:
+  plt = None
+  HAS_MPL = False
+
 SPEED_BUCKETS = [(0, 10), (10, 20), (20, 30), (30, 999)]
 BUCKET_LABELS = [f"{lo}-{hi if hi < 999 else '+'}" for lo, hi in SPEED_BUCKETS]
 CONTROL_RATE_HZ = 100.0  # controlsState publish rate
@@ -125,7 +134,7 @@ def parse_segment(path):
 
 
 def welch_psd(x, fs, nperseg=None):
-  """Tiny Welch PSD — avoids scipy dep."""
+  """Welch PSD in pure NumPy — avoids adding scipy to the project dependencies."""
   n = len(x)
   if nperseg is None:
     nperseg = min(1024, max(256, n // 8))
@@ -268,60 +277,52 @@ def analyze_segment(data, seg_id, out_dir, plot=True):
     "buckets": dict(bucket_stats),
   }
 
-  if plot:
-    try:
-      import matplotlib
-      matplotlib.use("Agg")
-      import matplotlib.pyplot as plt
+  if plot and HAS_MPL:
+    fig, ax = plt.subplots(1, 1, figsize=(8, 4))
+    m = data["active"]
+    ax.scatter(v[m], err[m], s=1, alpha=0.3)
+    ax.set_xlabel("vEgo [m/s]"); ax.set_ylabel("lat-accel error [m/s^2]")
+    ax.set_title(f"{seg_id} speed vs error")
+    ax.grid(alpha=0.3)
+    fig.savefig(os.path.join(out_dir, f"{seg_id}_speed_vs_err.png"), dpi=80)
+    plt.close(fig)
 
-      fig, ax = plt.subplots(1, 1, figsize=(8, 4))
-      m = data["active"]
-      ax.scatter(v[m], err[m], s=1, alpha=0.3)
-      ax.set_xlabel("vEgo [m/s]"); ax.set_ylabel("lat-accel error [m/s^2]")
-      ax.set_title(f"{seg_id} speed vs error")
-      ax.grid(alpha=0.3)
-      fig.savefig(os.path.join(out_dir, f"{seg_id}_speed_vs_err.png"), dpi=80)
+    for bi in range(len(BUCKET_LABELS) - 1, -1, -1):
+      lo, hi = SPEED_BUCKETS[bi]
+      mask = active & (v >= lo) & (v < hi)
+      if mask.sum() < 1024:
+        continue
+      e = err[mask] - np.mean(err[mask])
+      freqs, psd = welch_psd(e, CONTROL_RATE_HZ)
+      fig, ax = plt.subplots(figsize=(8, 4))
+      ax.semilogy(freqs, psd)
+      ax.axvspan(0.3, 1.5, alpha=0.15, color="orange", label="osc band")
+      ax.axvspan(0.5, 1.0, alpha=0.25, color="red", label="crosswind band")
+      ax.set_xlim(0, 5); ax.set_xlabel("Hz"); ax.set_ylabel("PSD")
+      ax.set_title(f"{seg_id} err PSD (bucket {BUCKET_LABELS[bi]})")
+      ax.grid(alpha=0.3); ax.legend()
+      fig.savefig(os.path.join(out_dir, f"{seg_id}_fft.png"), dpi=80)
       plt.close(fig)
+      break
 
-      # FFT plot for the highest-speed bucket with enough data
-      for bi in range(len(BUCKET_LABELS) - 1, -1, -1):
-        lo, hi = SPEED_BUCKETS[bi]
-        mask = active & (v >= lo) & (v < hi)
-        if mask.sum() < 1024:
-          continue
-        e = err[mask] - np.mean(err[mask])
-        freqs, psd = welch_psd(e, CONTROL_RATE_HZ)
-        fig, ax = plt.subplots(figsize=(8, 4))
-        ax.semilogy(freqs, psd)
-        ax.axvspan(0.3, 1.5, alpha=0.15, color="orange", label="osc band")
-        ax.axvspan(0.5, 1.0, alpha=0.25, color="red", label="crosswind band")
-        ax.set_xlim(0, 5); ax.set_xlabel("Hz"); ax.set_ylabel("PSD")
-        ax.set_title(f"{seg_id} err PSD (bucket {BUCKET_LABELS[bi]})")
-        ax.grid(alpha=0.3); ax.legend()
-        fig.savefig(os.path.join(out_dir, f"{seg_id}_fft.png"), dpi=80)
-        plt.close(fig)
-        break
+    fig, ax = plt.subplots(figsize=(10, 4))
+    tt = data["t"][data["active"]]
+    ax.plot(tt, data["cmd_torque"][data["active"]], label="cmd", linewidth=0.7)
+    ax2 = ax.twinx()
+    ax2.plot(tt, data["steerTorque"][data["active"]], color="C1", label="measured", linewidth=0.7, alpha=0.7)
+    ax.set_xlabel("t [s]"); ax.set_ylabel("cmd torque")
+    ax2.set_ylabel("measured torque")
+    ax.set_title(f"{seg_id} torque cmd vs measured")
+    fig.savefig(os.path.join(out_dir, f"{seg_id}_torque_cmd_vs_meas.png"), dpi=80)
+    plt.close(fig)
 
-      fig, ax = plt.subplots(figsize=(10, 4))
-      tt = data["t"][data["active"]]
-      ax.plot(tt, data["cmd_torque"][data["active"]], label="cmd", linewidth=0.7)
-      ax2 = ax.twinx()
-      ax2.plot(tt, data["steerTorque"][data["active"]], color="C1", label="measured", linewidth=0.7, alpha=0.7)
-      ax.set_xlabel("t [s]"); ax.set_ylabel("cmd torque")
-      ax2.set_ylabel("measured torque")
-      ax.set_title(f"{seg_id} torque cmd vs measured")
-      fig.savefig(os.path.join(out_dir, f"{seg_id}_torque_cmd_vs_meas.png"), dpi=80)
-      plt.close(fig)
-
-      fig, ax = plt.subplots(figsize=(10, 4))
-      ax.plot(data["t"], data["i"], linewidth=0.7)
-      ax.set_xlabel("t [s]"); ax.set_ylabel("integrator")
-      ax.set_title(f"{seg_id} integrator trajectory")
-      ax.grid(alpha=0.3)
-      fig.savefig(os.path.join(out_dir, f"{seg_id}_integrator.png"), dpi=80)
-      plt.close(fig)
-    except ImportError:
-      pass
+    fig, ax = plt.subplots(figsize=(10, 4))
+    ax.plot(data["t"], data["i"], linewidth=0.7)
+    ax.set_xlabel("t [s]"); ax.set_ylabel("integrator")
+    ax.set_title(f"{seg_id} integrator trajectory")
+    ax.grid(alpha=0.3)
+    fig.savefig(os.path.join(out_dir, f"{seg_id}_integrator.png"), dpi=80)
+    plt.close(fig)
 
   return out
 
