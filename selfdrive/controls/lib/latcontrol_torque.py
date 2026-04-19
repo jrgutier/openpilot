@@ -50,6 +50,7 @@ KD_UI_PARAMS = ("KdLowSpeed", "KdMidSpeed", "KdHighSpeed")
 UI_SPEED_BREAKPOINTS = (6.7, 15.6, 33.5)  # m/s, ~15/35/75 mph — shared by Kp and Kd
 KP_UI_MIN, KP_UI_MAX = 0.1, 5.0  # matches Tuning menu slider range
 KD_UI_MIN, KD_UI_MAX = 0.0, 3.0
+PARAM_REFRESH_FRAMES = 300  # 3 s at 100 Hz
 
 class LatControlTorque(LatControl):
   def __init__(self, CP, CP_SP, CI, dt):
@@ -123,7 +124,7 @@ class LatControlTorque(LatControl):
 
     # Re-read Tuning menu params periodically (~6 s at 50 Hz)
     self._param_update_frame += 1
-    if self._param_update_frame % 300 == 0:
+    if self._param_update_frame % PARAM_REFRESH_FRAMES == 0:
       self.kp_multipliers = self._load_kp_multipliers(self._params.get)
       self.kd_multipliers = self._load_kd_multipliers(self._params.get)
 
@@ -167,7 +168,7 @@ class LatControlTorque(LatControl):
       self.prev_filtered_meas = filtered_meas
 
       kp_working = np.interp(CS.vEgo, UI_SPEED_BREAKPOINTS, self.kp_multipliers)
-      kd_working = float(np.interp(CS.vEgo, UI_SPEED_BREAKPOINTS, self.kd_multipliers))
+      kd_working = np.interp(CS.vEgo, UI_SPEED_BREAKPOINTS, self.kd_multipliers)
       pid_log.error = float(filtered_error * kp_working)
 
       freeze_integrator = steer_limited_by_safety or CS.steeringPressed or CS.vEgo < 2
