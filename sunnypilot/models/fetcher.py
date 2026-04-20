@@ -73,7 +73,14 @@ class ModelParser:
 
   @staticmethod
   def parse_models(json_data: dict) -> list[custom.ModelManagerSP.ModelBundle]:
-    found_bundles = [ModelParser._parse_bundle(bundle) for bundle in json_data.get("bundles", [])]
+    found_bundles = []
+    for bundle in json_data.get("bundles", []):
+      try:
+        found_bundles.append(ModelParser._parse_bundle(bundle))
+      except Exception as e:
+        # Newer manifests may introduce enum values (e.g. new model types) our schema doesn't know.
+        # Skip those bundles rather than failing the whole fetch.
+        cloudlog.warning(f"Skipping bundle {bundle.get('short_name', '?')} (unparseable): {e}")
     return [bundle for bundle in found_bundles if is_bundle_version_compatible(bundle.to_dict())]
 
 
@@ -116,7 +123,41 @@ class ModelCache:
 
 class ModelFetcher:
   """Handles fetching and caching of model data from remote source"""
-  MODEL_URL = "https://raw.githubusercontent.com/sunnypilot/sunnypilot-models/refs/heads/gh-pages/docs/driving_models_v15.json"
+  MODEL_URL_TEMPLATE = "https://raw.githubusercontent.com/sunnypilot/sunnypilot-models/refs/heads/gh-pages/docs/driving_models_v{ver}.json"
+  # Known-good floor — probing walks upward from here. Bump if upstream ever retires this.
+  MODEL_URL_BASELINE = 15
+  # Sanity cap on how far above the baseline we probe.
+  MODEL_URL_PROBE_CEILING = 20
+
+  _resolved_url: str | None = None
+
+  @classmethod
+  def get_model_url(cls) -> str:
+    """Resolves the highest-numbered `driving_models_v{N}.json` that exists upstream.
+
+    Walks upward from MODEL_URL_BASELINE via HEAD requests, stopping at the first 404.
+    Result is memoized on the class so the probe runs once per process. On any network
+    error we fall back to the baseline URL — this keeps offline boots working.
+    """
+    if cls._resolved_url is not None:
+      return cls._resolved_url
+
+    latest = cls.MODEL_URL_BASELINE
+    for ver in range(cls.MODEL_URL_BASELINE + 1, cls.MODEL_URL_BASELINE + cls.MODEL_URL_PROBE_CEILING + 1):
+      try:
+        resp = requests.head(cls.MODEL_URL_TEMPLATE.format(ver=ver), timeout=3, allow_redirects=True)
+      except RequestException:
+        break
+      if resp.status_code == 404:
+        break
+      if resp.status_code != 200:
+        cloudlog.warning(f"Model URL probe for v{ver} returned HTTP {resp.status_code}; stopping")
+        break
+      latest = ver
+
+    cls._resolved_url = cls.MODEL_URL_TEMPLATE.format(ver=latest)
+    cloudlog.info(f"Resolved models manifest URL: {cls._resolved_url}")
+    return cls._resolved_url
 
   def __init__(self, params: Params):
     self.params = params
@@ -127,13 +168,14 @@ class ModelFetcher:
     """Fetches fresh model data from remote and updates cache.
     Returns None on transport errors. Raises on 404 and other fatal HTTP errors.
     """
+    url = self.get_model_url()
     try:
-      response = requests.get(self.MODEL_URL, timeout=10)
+      response = requests.get(url, timeout=10)
 
       # Explicitly handle 404 differently
       if response.status_code == 404:
-        cloudlog.error(f"Models URL returned 404 Not Found: {self.MODEL_URL}")
-        raise HTTPError(f"404 Not Found: {self.MODEL_URL}", response=response)
+        cloudlog.error(f"Models URL returned 404 Not Found: {url}")
+        raise HTTPError(f"404 Not Found: {url}", response=response)
 
       # Raise for any other 4xx/5xx
       response.raise_for_status()
