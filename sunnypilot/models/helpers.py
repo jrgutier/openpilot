@@ -44,21 +44,12 @@ def is_bundle_version_compatible(bundle: dict) -> bool:
   """
   Checks whether the model bundle is compatible with the current selector version constraints.
 
-  The bundle specifies a `minimum_selector_version`, which defines the minimum selector version
-  required to load the model. This function ensures that:
-
-    1. The model is not too old: the bundle must require at least `REQUIRED_MIN_SELECTOR_VERSION`.
-    2. The model is not too new: it must support the current selector version (`CURRENT_SELECTOR_VERSION`).
-
-  This allows the selector to enforce both a minimum and maximum range of supported models,
-  even if a model would otherwise be compatible.
-
-  :param bundle: Dictionary containing `minimum_selector_version`, as defined by the model bundle.
-  :type bundle: Dict
-  :return: True if the selector version is within the accepted range for the bundle; otherwise False.
-  :rtype: Bool
+  The bundle must require at least `REQUIRED_MIN_SELECTOR_VERSION` — this rejects stale cached
+  bundles from deprecated selector generations. The upper bound was intentionally removed so that
+  newly-published bundles (tagged with a selector version above `CURRENT_SELECTOR_VERSION`) are
+  still listed in the UI.
   """
-  return bool(REQUIRED_MIN_SELECTOR_VERSION <= bundle.get("minimumSelectorVersion", 0) <= CURRENT_SELECTOR_VERSION)
+  return bool(REQUIRED_MIN_SELECTOR_VERSION <= bundle.get("minimumSelectorVersion", 0))
 
 
 def get_active_bundle(params: Params = None) -> custom.ModelManagerSP.ModelBundle:
