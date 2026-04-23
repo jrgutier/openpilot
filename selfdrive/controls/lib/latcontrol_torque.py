@@ -88,8 +88,7 @@ class LatControlTorque(LatControl):
     self._params = Params()
     self.kp_multipliers = self._load_kp_multipliers(self._params.get)
     self.kd_multipliers = self._load_kd_multipliers(self._params.get)
-    self.lane_position_offset = self._read_param(self._params.get, LANE_POSITION_PARAM,
-                                                 LANE_POSITION_MIN, LANE_POSITION_MAX, default=0.0)
+    self.lane_position_offset = self._load_lane_position_offset(self._params.get)
     self._param_update_frame = 0
 
     self.extension = LatControlTorqueExt(self, CP, CP_SP, CI)
@@ -114,6 +113,10 @@ class LatControlTorque(LatControl):
   @staticmethod
   def _load_kd_multipliers(param_getter) -> list[float]:
     return LatControlTorque._load_multipliers(param_getter, KD_UI_PARAMS, KD_UI_MIN, KD_UI_MAX)
+
+  @staticmethod
+  def _load_lane_position_offset(param_getter) -> float:
+    return LatControlTorque._read_param(param_getter, LANE_POSITION_PARAM, LANE_POSITION_MIN, LANE_POSITION_MAX, default=0.0)
 
   def reset(self):
     super().reset()
@@ -143,8 +146,7 @@ class LatControlTorque(LatControl):
     if self._param_update_frame % PARAM_REFRESH_FRAMES == 0:
       self.kp_multipliers = self._load_kp_multipliers(self._params.get)
       self.kd_multipliers = self._load_kd_multipliers(self._params.get)
-      self.lane_position_offset = self._read_param(self._params.get, LANE_POSITION_PARAM,
-                                                   LANE_POSITION_MIN, LANE_POSITION_MAX, default=0.0)
+      self.lane_position_offset = self._load_lane_position_offset(self._params.get)
 
     pid_log = log.ControlsState.LateralTorqueState.new_message()
     pid_log.version = VERSION
@@ -169,12 +171,11 @@ class LatControlTorque(LatControl):
     if (active and self.extension.model_valid and model_v2 is not None
         and CS.vEgo > LANE_POSITION_ENABLE_MIN_V
         and model_v2.meta.laneChangeState == LaneChangeState.off):
-      path_y_la = float(np.interp(LANE_POSITION_LOOKAHEAD_T, ModelConstants.T_IDXS, model_v2.position.y))
+      path_y_la = np.interp(LANE_POSITION_LOOKAHEAD_T, ModelConstants.T_IDXS, model_v2.position.y)
       path_error = self.lane_position_offset - path_y_la
-      lane_pos_bias = float(np.clip(LANE_POSITION_KP * path_error,
-                                    -LANE_POSITION_MAX_BIAS, LANE_POSITION_MAX_BIAS))
+      lane_pos_bias = np.clip(LANE_POSITION_KP * path_error, -LANE_POSITION_MAX_BIAS, LANE_POSITION_MAX_BIAS)
       setpoint += lane_pos_bias
-    pid_log.lanePositionBias = lane_pos_bias
+    pid_log.lanePositionBias = float(lane_pos_bias)
 
     error = setpoint - measurement
 
