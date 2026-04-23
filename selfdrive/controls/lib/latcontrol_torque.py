@@ -9,8 +9,11 @@ from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.params import Params
 from openpilot.selfdrive.controls.lib.latcontrol import LatControl
 from openpilot.common.pid import PIDController
+from openpilot.selfdrive.modeld.constants import ModelConstants
 
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_ext import LatControlTorqueExt
+
+LaneChangeState = log.LaneChangeState
 
 # At higher speeds (25+mph) we can assume:
 # Lateral acceleration achieved by a specific car correlates to
@@ -52,6 +55,17 @@ KP_UI_MIN, KP_UI_MAX = 0.1, 5.0  # matches Tuning menu slider range
 KD_UI_MIN, KD_UI_MAX = 0.0, 3.0
 PARAM_REFRESH_FRAMES = 300  # 3 s at 100 Hz
 
+# Lane-position feedback: counters model path bias without touching the curvature head.
+# The modern model's desiredCurvature head is invariant to input warps, so CameraOffset
+# can't nudge it. Instead we bias the lateral-accel setpoint by a P-term on the model's
+# own predicted y at a lookahead — closed-loop on position.y, not curvature.
+LANE_POSITION_PARAM = "LanePositionOffset"
+LANE_POSITION_LOOKAHEAD_T = 1.0        # s, pure-pursuit style horizon
+LANE_POSITION_KP = 0.3                 # (m/s²)/m, conservative starting gain
+LANE_POSITION_MAX_BIAS = 1.0           # m/s², safety cap, well under pid.set_limits range
+LANE_POSITION_ENABLE_MIN_V = 3.0       # m/s, avoid fighting the model at crawl/stop
+LANE_POSITION_MIN, LANE_POSITION_MAX = -1.0, 1.0  # m, param read bounds
+
 class LatControlTorque(LatControl):
   def __init__(self, CP, CP_SP, CI, dt):
     super().__init__(CP, CP_SP, CI, dt)
@@ -74,6 +88,8 @@ class LatControlTorque(LatControl):
     self._params = Params()
     self.kp_multipliers = self._load_kp_multipliers(self._params.get)
     self.kd_multipliers = self._load_kd_multipliers(self._params.get)
+    self.lane_position_offset = self._read_param(self._params.get, LANE_POSITION_PARAM,
+                                                 LANE_POSITION_MIN, LANE_POSITION_MAX, default=0.0)
     self._param_update_frame = 0
 
     self.extension = LatControlTorqueExt(self, CP, CP_SP, CI)
@@ -127,6 +143,8 @@ class LatControlTorque(LatControl):
     if self._param_update_frame % PARAM_REFRESH_FRAMES == 0:
       self.kp_multipliers = self._load_kp_multipliers(self._params.get)
       self.kd_multipliers = self._load_kd_multipliers(self._params.get)
+      self.lane_position_offset = self._read_param(self._params.get, LANE_POSITION_PARAM,
+                                                   LANE_POSITION_MIN, LANE_POSITION_MAX, default=0.0)
 
     pid_log = log.ControlsState.LateralTorqueState.new_message()
     pid_log.version = VERSION
@@ -142,6 +160,22 @@ class LatControlTorque(LatControl):
     delay_frames = int(np.clip(lat_delay / self.dt + 1, 1, self.lat_accel_request_buffer_len))
     expected_lateral_accel = self.lat_accel_request_buffer[-delay_frames]
     setpoint = expected_lateral_accel
+
+    # Lane-position feedback: bias the setpoint so the car converges on a configurable
+    # offset from the model's own predicted path. Counters model perception bias that the
+    # curvature head can't correct (see CameraOffset comment near this module's constants).
+    lane_pos_bias = 0.0
+    model_v2 = self.extension.model_v2
+    if (active and self.extension.model_valid and model_v2 is not None
+        and CS.vEgo > LANE_POSITION_ENABLE_MIN_V
+        and model_v2.meta.laneChangeState == LaneChangeState.off):
+      path_y_la = float(np.interp(LANE_POSITION_LOOKAHEAD_T, ModelConstants.T_IDXS, model_v2.position.y))
+      path_error = self.lane_position_offset - path_y_la
+      lane_pos_bias = float(np.clip(LANE_POSITION_KP * path_error,
+                                    -LANE_POSITION_MAX_BIAS, LANE_POSITION_MAX_BIAS))
+      setpoint += lane_pos_bias
+    pid_log.lanePositionBias = lane_pos_bias
+
     error = setpoint - measurement
 
     lookahead_idx = int(np.clip(-delay_frames + self.lookahead_frames, -self.lat_accel_request_buffer_len+1, -2))

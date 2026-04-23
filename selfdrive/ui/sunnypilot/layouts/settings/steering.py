@@ -96,6 +96,21 @@ class SteeringLayout(Widget):
       title=lambda: tr("Neural Network Lateral Control (NNLC)"),
       description=""
     )
+    self._lane_position_offset = option_item_sp(
+      param="LanePositionOffset",
+      title=lambda: tr("Lane Position Offset"),
+      description=lambda: tr(
+        "Nudges the car laterally relative to where the driving model thinks the lane is. "
+        "Negative values shift right, positive values shift left. "
+        "Start small (0.05 m) and adjust in 0.02 m steps until the car sits centered. "
+        "Takes about a second to ramp in. Default 0 is stock behavior."
+      ),
+      min_value=-30,
+      max_value=30,
+      value_change_step=1,
+      use_float_scaling=True,
+      label_callback=(lambda x: f"{x / 100:+.2f} m"),
+    )
 
     items = [
       self._mads_toggle,
@@ -109,6 +124,8 @@ class SteeringLayout(Widget):
       LineSeparatorSP(40),
       self._torque_control_toggle,
       self._torque_customization_button,
+      LineSeparatorSP(40),
+      self._lane_position_offset,
       LineSeparatorSP(40),
       self._nnlc_toggle,
     ]
