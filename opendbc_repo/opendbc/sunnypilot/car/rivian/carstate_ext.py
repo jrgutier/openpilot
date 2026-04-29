@@ -31,8 +31,10 @@ class CarStateExt:
     self.increase_counter = 0
     self.decrease_counter = 0
     self.stalk_down_counter = 0
+    self.up2_counter: int = 0
+    self.up2_edge_armed: bool = True
 
-  def update_longitudinal_upgrade(self, ret: structs.CarState, can_parsers: dict[StrEnum, CANParser]) -> None:
+  def update_longitudinal_upgrade(self, ret: structs.CarState, ret_sp: structs.CarStateSP, can_parsers: dict[StrEnum, CANParser]) -> None:
     cp_park = can_parsers[Bus.alt]
     cp_adas = can_parsers[Bus.adas]
     cp = can_parsers[Bus.pt]
@@ -76,10 +78,22 @@ class CarStateExt:
         self.set_speed = ret.vEgoCluster
 
       # VDM_UserAdasRequest: 0=IDLE, 1=UP_1, 2=UP_2, 3=DOWN_1, 4=DOWN_2
-      stalk_down = int(cp.vl["VDM_AdasSts"]["VDM_UserAdasRequest"]) in (3, 4)
+      user_adas_req = int(cp.vl["VDM_AdasSts"]["VDM_UserAdasRequest"])
+      stalk_down = user_adas_req in (3, 4)
       self.stalk_down_counter = self.stalk_down_counter + 1 if stalk_down else 0
       if self.stalk_down_counter == 1:
         self.set_speed = max(self.set_speed, ret.vEgoCluster)
+
+      # UP_2: emit a one-frame madsDisableRequest pulse after 2 consecutive frames.
+      # up2_edge_armed resets only when the value leaves 2 (dwell debounce).
+      if user_adas_req == 2:
+        self.up2_counter += 1
+        if self.up2_counter >= 2 and self.up2_edge_armed:
+          ret_sp.madsDisableRequest = True
+          self.up2_edge_armed = False
+      else:
+        self.up2_counter = 0
+        self.up2_edge_armed = True
 
       self.set_speed = max(MIN_SET_SPEED, min(self.set_speed, MAX_SET_SPEED))
       ret.cruiseState.speed = self.set_speed
@@ -88,9 +102,9 @@ class CarStateExt:
       ret.leftBlindspot = cp_park.vl["BSM_BlindSpotIndicator_Fwd"]["BSM_BlindSpotIndicator_Left"] != 0
       ret.rightBlindspot = cp_park.vl["BSM_BlindSpotIndicator_Fwd"]["BSM_BlindSpotIndicator_Right"] != 0
 
-  def update(self, ret: structs.CarState, can_parsers: dict[StrEnum, CANParser]) -> None:
+  def update(self, ret: structs.CarState, ret_sp: structs.CarStateSP, can_parsers: dict[StrEnum, CANParser]) -> None:
     if self.CP_SP.flags & RivianFlagsSP.LONGITUDINAL_HARNESS_UPGRADE:
-      self.update_longitudinal_upgrade(ret, can_parsers)
+      self.update_longitudinal_upgrade(ret, ret_sp, can_parsers)
 
   @staticmethod
   def get_parser(CP, CP_SP) -> dict[StrEnum, CANParser]:
