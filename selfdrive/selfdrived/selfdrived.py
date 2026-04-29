@@ -49,6 +49,18 @@ TurnDirection = custom.ModelDataV2SP.TurnDirection
 
 IGNORED_SAFETY_MODES = (SafetyModel.silent, SafetyModel.noOutput)
 
+# Index into PERSONALITY_RANK_ORDER = aggressiveness rank (low = relaxed, high = veryAggressive).
+PERSONALITY_RANK_ORDER = [2, 1, 0, 3]
+PERSONALITY_TO_RANK = {p: i for i, p in enumerate(PERSONALITY_RANK_ORDER)}
+assert sorted(PERSONALITY_RANK_ORDER) == sorted(log.LongitudinalPersonality.schema.enumerants.values())
+
+
+def _step_personality_ranked(current: int, direction: int) -> int:
+  """Step current personality by ±1 rank along PERSONALITY_RANK_ORDER, clamped at endpoints."""
+  cur_rank = PERSONALITY_TO_RANK[current]
+  new_rank = max(0, min(len(PERSONALITY_RANK_ORDER) - 1, cur_rank + direction))
+  return PERSONALITY_RANK_ORDER[new_rank]
+
 
 class SelfdriveD(CruiseHelper):
   def __init__(self, CP=None, CP_SP=None):
@@ -140,6 +152,7 @@ class SelfdriveD(CruiseHelper):
       max(log.LongitudinalPersonality.schema.enumerants.values()),
       self.params
     )
+    self._latched_personality_direction = 0  # bridges carState/carStateSP frame skew (see data_sample)
     self.recalibrating_seen = False
     self.state_machine = StateMachine()
     self.rk = Ratekeeper(100, print_delay_threshold=None)
@@ -447,14 +460,20 @@ class SelfdriveD(CruiseHelper):
 
     CruiseHelper.update(self, CS, self.events_sp, self.experimental_mode)
 
-    # decrement personality on distance button press
+    # personality on distance button: direction-aware if carStateSP carries one, else legacy cycle.
     if self.CP.openpilotLongitudinalControl:
       if any(not be.pressed and be.type == ButtonType.gapAdjustCruise for be in CS.buttonEvents):
         if not self.experimental_mode_switched:
-          # Cycle order: aggressive(0) -> veryAggressive(3) -> relaxed(2) -> standard(1)
-          self.personality = (self.personality - 1) % 4
-          self.params.put_nonblocking('LongitudinalPersonality', self.personality)
-          self.events.add(EventName.personalityChanged)
+          direction = self._latched_personality_direction
+          self._latched_personality_direction = 0
+          if direction != 0:
+            new_personality = _step_personality_ranked(self.personality, direction)
+          else:
+            new_personality = (self.personality - 1) % 4  # legacy cycle
+          if new_personality != self.personality:
+            self.personality = new_personality
+            self.params.put_nonblocking('LongitudinalPersonality', self.personality)
+            self.events.add(EventName.personalityChanged)
         self.experimental_mode_switched = False
 
     self.icbm.run(CS, self.sm['carControl'], self.sm['longitudinalPlanSP'], self.is_metric)
@@ -467,6 +486,12 @@ class SelfdriveD(CruiseHelper):
     CS_SP = _car_state_sp.carStateSP if _car_state_sp else custom.CarStateSP.new_message()
 
     self.sm.update(0)
+
+    # Latch non-zero direction; zero (no detent / absent carStateSP) preserves prior latch
+    # to bridge the carState/carStateSP frame skew.
+    direction = int(CS_SP.personalityDirection)
+    if direction != 0:
+      self._latched_personality_direction = direction
 
     if not self.initialized:
       all_valid = CS.canValid and self.sm.all_checks()
