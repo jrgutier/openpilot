@@ -437,6 +437,7 @@ struct BackupManagerSP @0xf98d843bfd7004a3 {
 struct CarStateSP @0xb86e6369214c01c8 {
   speedLimit @0 :Float32;
   madsDisableRequest @1 :Bool;  # one-frame pulse from car-specific carstate_ext on user-initiated stalk-disable gesture; consumer (mads.py) must latch.
+  personalityDirection @2 :Int8;  # +1=more aggressive, -1=less aggressive, 0=no event this frame
 }
 
 struct LiveMapDataSP @0xf416ec09499d9d19 {

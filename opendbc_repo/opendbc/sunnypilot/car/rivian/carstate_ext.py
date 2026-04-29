@@ -18,6 +18,9 @@ ButtonType = structs.CarState.ButtonEvent.Type
 MAX_SET_SPEED = 85 * CV.MPH_TO_MS
 MIN_SET_SPEED = 20 * CV.MPH_TO_MS
 
+# Counter-increment direction asserted from logs. Flip if on-vehicle test shows wrong direction.
+RIVIAN_DIRECTION_SIGN: int = -1
+
 
 class CarStateExt:
   def __init__(self, CP: structs.CarParams, CP_SP: structs.CarParamsSP):
@@ -27,7 +30,7 @@ class CarStateExt:
     self.set_speed = 10
     self.increase_button = False
     self.decrease_button = False
-    self.distance_button = 0
+    self.distance_button: int | None = None  # None until first valid scroll seen, also reset on 255 sentinel
     self.increase_counter = 0
     self.decrease_counter = 0
     self.stalk_down_counter = 0
@@ -43,12 +46,23 @@ class CarStateExt:
     prev_decrease_button = self.decrease_button
 
     if self.CP.openpilotLongitudinalControl:
-      # distance scroll wheel
-      right_scroll = cp_park.vl["WheelButtons_Fwd"]["RightButton_Scroll"]
-      if right_scroll != 255:
-        if self.distance_button != right_scroll:
+      personality_direction = 0
+      right_scroll = int(cp_park.vl["WheelButtons_Fwd"]["RightButton_Scroll"])
+      if right_scroll == 255:
+        self.distance_button = None
+      elif self.distance_button is None:
+        self.distance_button = right_scroll
+      elif self.distance_button != right_scroll:
+        # Signed delta with mod-256 wrap; result in [-128, 127].
+        delta = ((right_scroll - self.distance_button + 128) % 256) - 128
+        if delta != 0:
+          sign = 1 if delta > 0 else -1
+          personality_direction = RIVIAN_DIRECTION_SIGN * sign
           ret.buttonEvents = [structs.CarState.ButtonEvent(pressed=False, type=ButtonType.gapAdjustCruise)]
         self.distance_button = right_scroll
+
+      # Publish every frame for replay correctness (default 0).
+      ret_sp.personalityDirection = personality_direction
 
       # button logic for set-speed
       self.increase_button = cp_park.vl["WheelButtons_Fwd"]["RightButton_RightClick"] == 2
