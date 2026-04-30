@@ -30,7 +30,7 @@ class CarStateExt:
     self.set_speed = 10
     self.increase_button = False
     self.decrease_button = False
-    self.distance_button: int | None = None  # None until first valid scroll seen, also reset on 255 sentinel
+    self.distance_button: int | None = None  # None until first valid scroll seen
     self.increase_counter = 0
     self.decrease_counter = 0
     self.stalk_down_counter = 0
