@@ -152,7 +152,6 @@ class SelfdriveD(CruiseHelper):
       max(log.LongitudinalPersonality.schema.enumerants.values()),
       self.params
     )
-    self._latched_personality_direction = 0  # bridges carState/carStateSP frame skew (see data_sample)
     self.recalibrating_seen = False
     self.state_machine = StateMachine()
     self.rk = Ratekeeper(100, print_delay_threshold=None)
@@ -463,21 +462,34 @@ class SelfdriveD(CruiseHelper):
 
     CruiseHelper.update(self, CS, self.events_sp, self.experimental_mode)
 
-    # personality on distance button: direction-aware if carStateSP carries one, else legacy cycle.
+    # personality on gapAdjustCruise:
+    #   - Rivian encodes direction inline on ButtonEvent.pressed
+    #     (pressed=True → +1 step, pressed=False → -1 step) to bypass the
+    #     cross-socket race that legacy `(p-1) % 4` fallback exposed.
+    #   - Other brands keep the legacy single-direction cycle on the release edge.
     if self.CP.openpilotLongitudinalControl:
-      if any(not be.pressed and be.type == ButtonType.gapAdjustCruise for be in CS.buttonEvents):
-        if not self.experimental_mode_switched:
-          direction = self._latched_personality_direction
-          self._latched_personality_direction = 0
-          if direction != 0:
-            new_personality = _step_personality_ranked(self.personality, direction)
-          else:
-            new_personality = (self.personality - 1) % 4  # legacy cycle
+      if self.CP.brand == 'rivian':
+        for be in CS.buttonEvents:
+          if be.type != ButtonType.gapAdjustCruise:
+            continue
+          if self.experimental_mode_switched:
+            self.experimental_mode_switched = False
+            continue
+          direction = +1 if be.pressed else -1
+          new_personality = _step_personality_ranked(self.personality, direction)
           if new_personality != self.personality:
             self.personality = new_personality
             self.params.put_nonblocking('LongitudinalPersonality', self.personality)
             self.events.add(EventName.personalityChanged)
-        self.experimental_mode_switched = False
+      else:
+        if any(not be.pressed and be.type == ButtonType.gapAdjustCruise for be in CS.buttonEvents):
+          if not self.experimental_mode_switched:
+            new_personality = (self.personality - 1) % 4  # legacy cycle
+            if new_personality != self.personality:
+              self.personality = new_personality
+              self.params.put_nonblocking('LongitudinalPersonality', self.personality)
+              self.events.add(EventName.personalityChanged)
+          self.experimental_mode_switched = False
 
     self.icbm.run(CS, self.sm['carControl'], self.sm['longitudinalPlanSP'], self.is_metric)
 
@@ -489,12 +501,6 @@ class SelfdriveD(CruiseHelper):
     CS_SP = _car_state_sp.carStateSP if _car_state_sp else custom.CarStateSP.new_message()
 
     self.sm.update(0)
-
-    # Latch non-zero direction; zero (no detent / absent carStateSP) preserves prior latch
-    # to bridge the carState/carStateSP frame skew.
-    direction = int(CS_SP.personalityDirection)
-    if direction != 0:
-      self._latched_personality_direction = direction
 
     if not self.initialized:
       all_valid = CS.canValid and self.sm.all_checks()

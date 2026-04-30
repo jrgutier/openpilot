@@ -37,6 +37,12 @@ class CruiseHelper:
       if self.button_frame_counts[button] > 0:
         self.button_frame_counts[button] += 1
 
+    if self.CP.brand == 'rivian':
+      # Rivian's gapAdjustCruise events encode scroll-wheel direction in
+      # ButtonEvent.pressed (not press-state), so they must not feed the
+      # long-press timer that toggles experimental mode.
+      return
+
     for button_event in CS.buttonEvents:
       button = button_event.type.raw
       if button in self.button_frame_counts:

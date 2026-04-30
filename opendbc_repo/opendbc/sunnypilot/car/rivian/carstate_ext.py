@@ -46,23 +46,25 @@ class CarStateExt:
     prev_decrease_button = self.decrease_button
 
     if self.CP.openpilotLongitudinalControl:
-      personality_direction = 0
+      # RightButton_Scroll is a true bidirectional 8-bit rotary encoder counter
+      # (mod 256). Confirmed by on-vehicle rlog decode 2026-04-29: value 255 is
+      # a NORMAL mid-stream counter value, NOT an unconnected sentinel.
       right_scroll = int(cp_park.vl["WheelButtons_Fwd"]["RightButton_Scroll"])
-      if right_scroll == 255:
-        self.distance_button = None
-      elif self.distance_button is None:
+      if self.distance_button is None:
         self.distance_button = right_scroll
       elif self.distance_button != right_scroll:
         # Signed delta with mod-256 wrap; result in [-128, 127].
         delta = ((right_scroll - self.distance_button + 128) % 256) - 128
         if delta != 0:
           sign = 1 if delta > 0 else -1
-          personality_direction = RIVIAN_DIRECTION_SIGN * sign
-          ret.buttonEvents = [structs.CarState.ButtonEvent(pressed=False, type=ButtonType.gapAdjustCruise)]
+          # Encode direction inline on ButtonEvent.pressed so the consumer
+          # (selfdrived.py, Rivian branch) reads it directly without a
+          # cross-socket latch race against carStateSP.
+          #   pressed=True  → +1 step in PERSONALITY_RANK_ORDER (more aggressive)
+          #   pressed=False → -1 step (more relaxed)
+          pressed = (RIVIAN_DIRECTION_SIGN * sign) > 0
+          ret.buttonEvents = [structs.CarState.ButtonEvent(pressed=pressed, type=ButtonType.gapAdjustCruise)]
         self.distance_button = right_scroll
-
-      # Publish every frame for replay correctness (default 0).
-      ret_sp.personalityDirection = personality_direction
 
       # button logic for set-speed
       self.increase_button = cp_park.vl["WheelButtons_Fwd"]["RightButton_RightClick"] == 2

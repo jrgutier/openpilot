@@ -437,7 +437,11 @@ struct BackupManagerSP @0xf98d843bfd7004a3 {
 struct CarStateSP @0xb86e6369214c01c8 {
   speedLimit @0 :Float32;
   madsDisableRequest @1 :Bool;  # one-frame pulse from car-specific carstate_ext on user-initiated stalk-disable gesture; consumer (mads.py) must latch.
-  personalityDirection @2 :Int8;  # +1=more aggressive, -1=less aggressive, 0=no event this frame
+  # @2 was personalityDirection (Int8) introduced in 478189c2d2 and removed in
+  # bug2-scroll-direction-fix. Replaced by inline ButtonEvent.pressed encoding
+  # for Rivian; capnp forbids field-number reuse, so the slot is retained as
+  # a deprecated marker.
+  personalityDirectionDEPRECATED478189c2d2 @2 :Int8;
 }
 
 struct LiveMapDataSP @0xf416ec09499d9d19 {
