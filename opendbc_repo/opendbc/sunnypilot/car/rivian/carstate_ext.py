@@ -91,23 +91,14 @@ class CarStateExt:
       if not ret.cruiseState.enabled:
         self.set_speed = ret.vEgoCluster
 
-      # VDM_UserAdasRequest: 0=IDLE, 1=UP_1, 2=UP_2, 3=DOWN_1, 4=DOWN_2
+      # VDM_UserAdasRequest: 0=IDLE, 1=UP_1, 2=UP_2, 3=DOWN_1, 4=DOWN_2.
+      # UP_2 → madsDisableRequest is handled in update() unconditionally; here
+      # we only consume DOWN_1/DOWN_2 for set-speed-on-first-stalk-down.
       user_adas_req = int(cp.vl["VDM_AdasSts"]["VDM_UserAdasRequest"])
       stalk_down = user_adas_req in (3, 4)
       self.stalk_down_counter = self.stalk_down_counter + 1 if stalk_down else 0
       if self.stalk_down_counter == 1:
         self.set_speed = max(self.set_speed, ret.vEgoCluster)
-
-      # UP_2: emit a one-frame madsDisableRequest pulse after 2 consecutive frames.
-      # up2_edge_armed resets only when the value leaves 2 (dwell debounce).
-      if user_adas_req == 2:
-        self.up2_counter += 1
-        if self.up2_counter >= 2 and self.up2_edge_armed:
-          ret_sp.madsDisableRequest = True
-          self.up2_edge_armed = False
-      else:
-        self.up2_counter = 0
-        self.up2_edge_armed = True
 
       self.set_speed = max(MIN_SET_SPEED, min(self.set_speed, MAX_SET_SPEED))
       ret.cruiseState.speed = self.set_speed
@@ -117,6 +108,25 @@ class CarStateExt:
       ret.rightBlindspot = cp_park.vl["BSM_BlindSpotIndicator_Fwd"]["BSM_BlindSpotIndicator_Right"] != 0
 
   def update(self, ret: structs.CarState, ret_sp: structs.CarStateSP, can_parsers: dict[StrEnum, CANParser]) -> None:
+    # UP_2 → madsDisableRequest. Runs unconditionally for all Rivians:
+    # - VDM_UserAdasRequest is parsed off Bus.pt by base CarState, always available.
+    # - LONGITUDINAL_HARNESS_UPGRADE is a hardware-tap flag (interface.py, set on
+    #   fingerprint 0x131a), not a feature flag — no semantic relationship to a
+    #   stalk-position read on Bus.pt.
+    # - Commit 26fbf812d2: "UP_2 stalk position disables MADS while cruise stays
+    #   engaged" — by design this fires for stock-cruise (op-long=False) users.
+    # Do NOT re-gate behind openpilotLongitudinalControl or LONGITUDINAL_HARNESS_UPGRADE.
+    cp = can_parsers[Bus.pt]
+    user_adas_req = int(cp.vl["VDM_AdasSts"]["VDM_UserAdasRequest"])
+    if user_adas_req == 2:
+      self.up2_counter += 1
+      if self.up2_counter >= 2 and self.up2_edge_armed:
+        ret_sp.madsDisableRequest = True
+        self.up2_edge_armed = False
+    else:
+      self.up2_counter = 0
+      self.up2_edge_armed = True
+
     if self.CP_SP.flags & RivianFlagsSP.LONGITUDINAL_HARNESS_UPGRADE:
       self.update_longitudinal_upgrade(ret, ret_sp, can_parsers)
 
