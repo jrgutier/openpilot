@@ -186,6 +186,12 @@ class SelfdriveD(CruiseHelper):
 
     CruiseHelper.__init__(self, self.CP)
 
+  def _set_personality(self, new_personality: int) -> None:
+    if new_personality != self.personality:
+      self.personality = new_personality
+      self.params.put_nonblocking('LongitudinalPersonality', self.personality)
+      self.events.add(EventName.personalityChanged)
+
   def update_events(self, CS):
     """Compute onroadEvents from carState"""
 
@@ -476,19 +482,11 @@ class SelfdriveD(CruiseHelper):
             self.experimental_mode_switched = False
             continue
           direction = +1 if be.pressed else -1
-          new_personality = _step_personality_ranked(self.personality, direction)
-          if new_personality != self.personality:
-            self.personality = new_personality
-            self.params.put_nonblocking('LongitudinalPersonality', self.personality)
-            self.events.add(EventName.personalityChanged)
+          self._set_personality(_step_personality_ranked(self.personality, direction))
       else:
         if any(not be.pressed and be.type == ButtonType.gapAdjustCruise for be in CS.buttonEvents):
           if not self.experimental_mode_switched:
-            new_personality = (self.personality - 1) % 4  # legacy cycle
-            if new_personality != self.personality:
-              self.personality = new_personality
-              self.params.put_nonblocking('LongitudinalPersonality', self.personality)
-              self.events.add(EventName.personalityChanged)
+            self._set_personality((self.personality - 1) % 4)  # legacy cycle
           self.experimental_mode_switched = False
 
     self.icbm.run(CS, self.sm['carControl'], self.sm['longitudinalPlanSP'], self.is_metric)
