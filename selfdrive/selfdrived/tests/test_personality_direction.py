@@ -1,9 +1,12 @@
 from cereal import log
+from opendbc.car import structs
 from openpilot.selfdrive.selfdrived.selfdrived import (
   PERSONALITY_RANK_ORDER,
   PERSONALITY_TO_RANK,
   _step_personality_ranked,
 )
+
+ButtonType = structs.CarState.ButtonEvent.Type
 
 _AGGRESSIVE = log.LongitudinalPersonality.schema.enumerants["aggressive"]
 _STANDARD   = log.LongitudinalPersonality.schema.enumerants["standard"]
@@ -61,46 +64,78 @@ class TestStepPersonalityRanked:
   def test_single_step_toward_less_aggressive_from_aggressive(self):
     assert _step_personality_ranked(_AGGRESSIVE, direction=-1) == _STANDARD
 
-  def test_direction_gated_on_signal_not_on_car_name(self):
-    assert _step_personality_ranked(_RELAXED, direction=+1) == _STANDARD
 
-
-class TestLatchMechanism:
-
-  @staticmethod
-  def _data_sample_latch(prior_latch: int, direction: int) -> int:
-    if direction != 0:
-      return direction
-    return prior_latch
+class TestRivianBrandAwareConsumer:
+  """Pure logic test of the brand-aware personality-stepping decision in
+  selfdrived.py update_events. Mirrors the production block:
+    - Rivian: pressed=True → +1 step, pressed=False → -1 step (direct from event).
+    - Other brands: only react to release event (pressed=False); legacy (p-1) % 4 cycle.
+  """
 
   @staticmethod
-  def _gap_button_consume(latch: int) -> tuple:
-    return latch, 0
+  def _step_rivian(personality: int, button_events: list) -> int:
+    """Replicates the Rivian branch from selfdrived.py update_events."""
+    for be in button_events:
+      if be.type != ButtonType.gapAdjustCruise:
+        continue
+      direction = +1 if be.pressed else -1
+      personality = _step_personality_ranked(personality, direction)
+    return personality
 
-  def test_non_zero_direction_is_latched(self):
-    latch = self._data_sample_latch(prior_latch=0, direction=-1)
-    assert latch == -1
+  @staticmethod
+  def _step_legacy(personality: int, button_events: list) -> int:
+    """Replicates the non-Rivian branch from selfdrived.py update_events."""
+    if any(not be.pressed and be.type == ButtonType.gapAdjustCruise for be in button_events):
+      return (personality - 1) % 4
+    return personality
 
-  def test_zero_direction_preserves_existing_latch(self):
-    latch = self._data_sample_latch(prior_latch=-1, direction=0)
-    assert latch == -1
+  @staticmethod
+  def _gap(pressed: bool) -> structs.CarState.ButtonEvent:
+    return structs.CarState.ButtonEvent(pressed=pressed, type=ButtonType.gapAdjustCruise)
 
-  def test_latch_survives_one_frame_skew(self):
-    latch = self._data_sample_latch(prior_latch=0, direction=-1)
-    latch = self._data_sample_latch(prior_latch=latch, direction=0)
-    assert latch == -1
-    consumed, latch = self._gap_button_consume(latch)
-    assert consumed == -1
+  # --- Rivian branch -----------------------------------------------------
 
-  def test_latch_is_cleared_after_consume(self):
-    latch = self._data_sample_latch(prior_latch=0, direction=-1)
-    _, latch = self._gap_button_consume(latch)
-    assert latch == 0
+  def test_rivian_pressed_true_steps_toward_more_aggressive(self):
+    assert self._step_rivian(_STANDARD, [self._gap(True)]) == _AGGRESSIVE
 
-  def test_second_button_press_without_new_direction_falls_back_to_legacy_cycle(self):
-    latch = self._data_sample_latch(prior_latch=0, direction=-1)
-    _, latch = self._gap_button_consume(latch)
-    assert latch == 0
-    latch = self._data_sample_latch(prior_latch=latch, direction=0)
-    consumed, _ = self._gap_button_consume(latch)
-    assert consumed == 0
+  def test_rivian_pressed_false_steps_toward_more_relaxed(self):
+    assert self._step_rivian(_AGGRESSIVE, [self._gap(False)]) == _STANDARD
+
+  def test_rivian_does_not_fall_back_to_legacy_on_pressed_true(self):
+    """A burst of pressed=True events must NOT cycle through all 4 personalities
+    in legacy order (the bug the user reported)."""
+    p = _STANDARD
+    for _ in range(10):
+      p = self._step_rivian(p, [self._gap(True)])
+    assert p == _VERY_AGG  # clamps, doesn't cycle past
+
+  def test_rivian_does_not_fall_back_to_legacy_on_pressed_false(self):
+    p = _AGGRESSIVE
+    for _ in range(10):
+      p = self._step_rivian(p, [self._gap(False)])
+    assert p == _RELAXED  # clamps, doesn't cycle past
+
+  def test_rivian_alternating_pressed_oscillates_one_step(self):
+    p = _STANDARD
+    p = self._step_rivian(p, [self._gap(True)])   # → aggressive
+    p = self._step_rivian(p, [self._gap(False)])  # → standard
+    p = self._step_rivian(p, [self._gap(True)])   # → aggressive
+    assert p == _AGGRESSIVE
+
+  # --- Non-Rivian regression guard ---------------------------------------
+
+  def test_non_rivian_legacy_cycle_unchanged_on_release(self):
+    assert self._step_legacy(_AGGRESSIVE, [self._gap(False)]) == (_AGGRESSIVE - 1) % 4
+
+  def test_non_rivian_legacy_filters_out_pressed_true(self):
+    """Non-Rivian brands must NOT react to pressed=True (preserves Rivian-only
+    direction encoding without affecting other brands)."""
+    assert self._step_legacy(_AGGRESSIVE, [self._gap(True)]) == _AGGRESSIVE
+
+  def test_non_rivian_legacy_full_cycle_through_all_four(self):
+    p = 0
+    seen = {p}
+    for _ in range(8):
+      p = self._step_legacy(p, [self._gap(False)])
+      seen.add(p)
+    assert seen == {0, 1, 2, 3}
