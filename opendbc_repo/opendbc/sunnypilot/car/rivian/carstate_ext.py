@@ -110,14 +110,11 @@ class CarStateExt:
       ret.rightBlindspot = cp_park.vl["BSM_BlindSpotIndicator_Fwd"]["BSM_BlindSpotIndicator_Right"] != 0
 
   def update(self, ret: structs.CarState, ret_sp: structs.CarStateSP, can_parsers: dict[StrEnum, CANParser]) -> None:
-    # UP_2 → madsDisableRequest. Runs unconditionally for all Rivians:
-    # - VDM_UserAdasRequest is parsed off Bus.pt by base CarState, always available.
-    # - LONGITUDINAL_HARNESS_UPGRADE is a hardware-tap flag (interface.py, set on
-    #   fingerprint 0x131a), not a feature flag — no semantic relationship to a
-    #   stalk-position read on Bus.pt.
-    # - Commit 26fbf812d2: "UP_2 stalk position disables MADS while cruise stays
-    #   engaged" — by design this fires for stock-cruise (op-long=False) users.
-    # Do NOT re-gate behind openpilotLongitudinalControl or LONGITUDINAL_HARNESS_UPGRADE.
+    # UP_2 → madsDisableRequest runs unconditionally for all Rivians.
+    # Stock-cruise users (op-long=False) need MADS to disable while cruise
+    # stays engaged; VDM_UserAdasRequest is on Bus.pt (always parsed), and
+    # LONGITUDINAL_HARNESS_UPGRADE is a hardware-tap marker, not a feature
+    # gate. Do NOT re-gate.
     cp = can_parsers[Bus.pt]
     user_adas_req = int(cp.vl["VDM_AdasSts"]["VDM_UserAdasRequest"])
     if user_adas_req == 2:
