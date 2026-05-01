@@ -11,6 +11,14 @@ ButtonType = structs.CarState.ButtonEvent.Type
 @dataclass
 class _MockParser:
   vl: dict
+  vl_all: dict | None = None
+
+  def __post_init__(self):
+    if self.vl_all is None:
+      self.vl_all = {
+        msg: {f: [v] for f, v in flds.items()}
+        for msg, flds in self.vl.items()
+      }
 
 
 def _make_can_parsers(scroll: int = 0, right_click: int = 0, left_click: int = 0,

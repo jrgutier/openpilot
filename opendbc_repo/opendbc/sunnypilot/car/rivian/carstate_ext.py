@@ -34,8 +34,7 @@ class CarStateExt:
     self.increase_counter = 0
     self.decrease_counter = 0
     self.stalk_down_counter = 0
-    self.up2_counter: int = 0
-    self.up2_edge_armed: bool = True
+    self.prev_user_adas_req: int = 0
 
   def update_longitudinal_upgrade(self, ret: structs.CarState, ret_sp: structs.CarStateSP, can_parsers: dict[StrEnum, CANParser]) -> None:
     cp_park = can_parsers[Bus.alt]
@@ -96,8 +95,8 @@ class CarStateExt:
       # VDM_UserAdasRequest: 0=IDLE, 1=UP_1, 2=UP_2, 3=DOWN_1, 4=DOWN_2.
       # UP_2 → madsDisableRequest is handled in update() unconditionally; here
       # we only consume DOWN_1/DOWN_2 for set-speed-on-first-stalk-down.
-      user_adas_req = int(cp.vl["VDM_AdasSts"]["VDM_UserAdasRequest"])
-      stalk_down = user_adas_req in (3, 4)
+      adas_vals = list(cp.vl_all["VDM_AdasSts"]["VDM_UserAdasRequest"]) or [self.prev_user_adas_req]
+      stalk_down = any(v in (3, 4) for v in adas_vals)
       self.stalk_down_counter = self.stalk_down_counter + 1 if stalk_down else 0
       if self.stalk_down_counter == 1:
         self.set_speed = max(self.set_speed, ret.vEgoCluster)
@@ -116,15 +115,13 @@ class CarStateExt:
     # LONGITUDINAL_HARNESS_UPGRADE is a hardware-tap marker, not a feature
     # gate. Do NOT re-gate.
     cp = can_parsers[Bus.pt]
-    user_adas_req = int(cp.vl["VDM_AdasSts"]["VDM_UserAdasRequest"])
-    if user_adas_req == 2:
-      self.up2_counter += 1
-      if self.up2_counter >= 2 and self.up2_edge_armed:
-        ret_sp.madsDisableRequest = True
-        self.up2_edge_armed = False
-    else:
-      self.up2_counter = 0
-      self.up2_edge_armed = True
+    # vl_all (not vl): UP_2 fires for one CAN frame at 50Hz; vl drops it when the
+    # tick's last sample is IDLE. Empty-list fallback to prev (not cp.vl) avoids
+    # spurious edges from stale vl on parser ticks with no new frames.
+    vals = list(cp.vl_all["VDM_AdasSts"]["VDM_UserAdasRequest"]) or [self.prev_user_adas_req]
+    if self.prev_user_adas_req != 2 and 2 in vals:
+      ret_sp.madsDisableRequest = True
+    self.prev_user_adas_req = int(vals[-1])
 
     if self.CP_SP.flags & RivianFlagsSP.LONGITUDINAL_HARNESS_UPGRADE:
       self.update_longitudinal_upgrade(ret, ret_sp, can_parsers)
