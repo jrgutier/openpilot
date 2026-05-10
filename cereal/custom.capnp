@@ -342,7 +342,9 @@ struct OnroadEventSP @0xda96579883444c35 {
     speedLimitChanged @21;
     speedLimitPending @22;
     e2eChime @23;
-    madsDisabledByStalk @24;
+    # @24 (madsDisabledByStalk) — enum value removed; was the trailing entry,
+    # so capnp permits the deletion. Empirical zero-emission evidence:
+    # 8 routes, 22 presses, 2026-05-06.
   }
 }
 
@@ -436,7 +438,11 @@ struct BackupManagerSP @0xf98d843bfd7004a3 {
 
 struct CarStateSP @0xb86e6369214c01c8 {
   speedLimit @0 :Float32;
-  madsDisableRequest @1 :Bool;  # one-frame pulse from car-specific carstate_ext on user-initiated stalk-disable gesture; consumer (mads.py) must latch.
+  # @1 was madsDisableRequest (Bool) — producer rerouted to ButtonEvent.cancel,
+  # consumer deleted. Retained as DEPRECATED because capnp ordinals must be
+  # sequential and @2 is still in use below. Empirical zero-pulse evidence:
+  # 8 routes, 22 presses, 2026-05-06.
+  madsDisableRequestDEPRECATED @1 :Bool;
   # @2 was personalityDirection (Int8) — replaced by inline ButtonEvent.pressed
   # encoding for Rivian. capnp forbids field-number reuse, so the slot is kept
   # as a deprecated marker.
