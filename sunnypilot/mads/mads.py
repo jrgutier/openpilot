@@ -57,9 +57,6 @@ class ModularAssistiveDrivingSystem:
     self.steering_mode_on_brake = read_steering_mode_param(self.CP, self.CP_SP, self.params)
     self.unified_engagement_mode = self.params.get_bool("MadsUnifiedEngagementMode")
 
-    self.user_latched_disable: bool = False
-    self.prev_enabled_toggle: bool = self.enabled_toggle
-
   def read_params(self):
     self.enabled_toggle = self.params.get_bool("Mads")
     self.main_enabled_toggle = self.params.get_bool("MadsMainCruiseAllowed")
@@ -80,21 +77,6 @@ class ModularAssistiveDrivingSystem:
       return False
 
     return True
-
-  def block_unified_engagement_mode(self) -> bool:
-    if self.user_latched_disable:
-      return True
-    # UEM disabled
-    if not self.unified_engagement_mode:
-      return True
-
-    if self.enabled:
-      return True
-
-    if self.selfdrive.enabled and self.selfdrive.enabled_prev:
-      return True
-
-    return False
 
   def get_wrong_car_mode(self, alert_only: bool) -> None:
     if alert_only:
@@ -154,19 +136,6 @@ class ModularAssistiveDrivingSystem:
       self.events.remove(EventName.cruiseDisabled)
       self.events.remove(EventName.manualRestart)
 
-    # User stalk-disable gesture (one-way: only disables, never re-enables).
-    # Track latched_this_frame so a simultaneous cruise rising edge doesn't clear the fresh latch.
-    latched_this_frame = False
-    if CS_SP.madsDisableRequest and self.enabled:
-      self.events_sp.add(EventNameSP.madsDisabledByStalk)
-      self.user_latched_disable = True
-      latched_this_frame = True
-
-    # Clear latch on cruise off→on edge (skip if the latch was just set this frame)
-    if self.user_latched_disable and not latched_this_frame:
-      if CS.cruiseState.enabled and not self.selfdrive.CS_prev.cruiseState.enabled:
-        self.user_latched_disable = False
-
     selfdrive_enable_events = self.events.has(EventName.pcmEnable) or self.events.has(EventName.buttonEnable)
     set_speed_btns_enable = any(be.type in SET_SPEED_BUTTONS for be in CS.buttonEvents)
 
@@ -177,7 +146,10 @@ class ModularAssistiveDrivingSystem:
       if self.pedal_pressed_non_gas_pressed(CS):
         self.events_sp.add(EventNameSP.pedalPressedAlertOnly)
 
-      if self.block_unified_engagement_mode():
+      # Block UEM when: UEM is off, MADS is already enabled (would be a no-op
+      # re-engage), or selfdrived was already enabled in the prior frame
+      # (avoids double-enable on the same engagement event).
+      if not self.unified_engagement_mode or self.enabled or (self.selfdrive.enabled and self.selfdrive.enabled_prev):
         self.events.remove(EventName.pcmEnable)
         self.events.remove(EventName.buttonEnable)
     else:
@@ -226,17 +198,10 @@ class ModularAssistiveDrivingSystem:
     self.events.remove(EventName.wrongCruiseMode)
 
   def update(self, CS: structs.CarState, CS_SP: custom.CarStateSP):
-    prev_enabled_toggle = self.prev_enabled_toggle
-    self.prev_enabled_toggle = self.enabled_toggle
     if not self.enabled_toggle:
       return
 
     self.data_sample()
-
-    # Clear latch on Mads param flip (enabled_toggle rising edge: was False, now True)
-    if self.user_latched_disable and not prev_enabled_toggle:
-      self.user_latched_disable = False
-
     self.update_events(CS, CS_SP)
 
     if not self.CP.passive and self.selfdrive.initialized:

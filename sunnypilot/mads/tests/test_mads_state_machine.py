@@ -42,7 +42,6 @@ class MockMADS:
     self.selfdrive.state_machine = mocker.MagicMock()
     self.selfdrive.events = Events()
     self.selfdrive.events_sp = EventsSP()
-    self.user_latched_disable: bool = False  # mirrors ModularAssistiveDrivingSystem
 
 
 class TestMADSStateMachine:
@@ -148,8 +147,8 @@ class TestMADSStateMachine:
         self.clear_events()
 
 
-class TestMADSStalkDisable:
-  """7 MADS stalk-disable scenarios (plan section 4, scenarios 2-7)."""
+class TestMADSBrandLkasButton:
+  """Brand-specific LKAS button regressions (Tesla + Hyundai LDA)."""
 
   @pytest.fixture(autouse=True)
   def setup_method(self, mocker: MockerFixture):
@@ -181,8 +180,6 @@ class TestMADSStalkDisable:
     self.sd.CS_prev.gasPressed = False
     self.sd.state_machine.soft_disable_timer = int(SOFT_DISABLE_TIME / DT_CTRL)
 
-    self.mads = ModularAssistiveDrivingSystem(self.sd)
-
   def _make_cs(self, cruise_enabled=False, cruise_available=True, button_events=None):
     cs = structs.CarState()
     cs.cruiseState.enabled = cruise_enabled
@@ -191,55 +188,8 @@ class TestMADSStalkDisable:
       cs.buttonEvents = button_events
     return cs
 
-  def _make_cs_sp(self, mads_disable_request=False):
-    cs_sp = structs.CarStateSP()
-    cs_sp.madsDisableRequest = mads_disable_request  # type: ignore[attr-defined]
-    return cs_sp
-
-  # --- scenario 2 ---------------------------------------------------------------
-
-  def test_up2_while_mads_off_is_noop(self):
-    """UP_2 edge while MADS disabled is a no-op — no event, no latch, no state change."""
-    assert not self.mads.enabled
-    cs = self._make_cs()
-    cs_sp = self._make_cs_sp(mads_disable_request=True)
-    self.mads.update(cs, cs_sp)
-    assert not self.sd.events_sp.has(EventNameSP.madsDisabledByStalk)
-    assert not self.mads.user_latched_disable
-    assert self.mads.state_machine.state == State.disabled
-
-  # --- scenario 3 ---------------------------------------------------------------
-
-  def test_up2_while_mads_on_disables_and_latches(self):
-    """UP_2 while MADS enabled → State.disabled, user_latched_disable=True, event emitted."""
-    self.mads.enabled = True
-    self.mads.state_machine.state = State.enabled
-    # Cruise already on so there is no rising edge that would immediately clear the latch
-    self.sd.CS_prev.cruiseState.enabled = True
-    cs = self._make_cs(cruise_enabled=True)
-    cs_sp = self._make_cs_sp(mads_disable_request=True)
-    self.mads.update(cs, cs_sp)
-    assert self.sd.events_sp.has(EventNameSP.madsDisabledByStalk)
-    assert self.mads.user_latched_disable
-    assert self.mads.state_machine.state == State.disabled
-
-  # --- scenario 4 ---------------------------------------------------------------
-
-  def test_cruise_cycle_clears_latch(self):
-    """cruiseState.enabled rising edge (off→on) clears user_latched_disable."""
-    self.mads.user_latched_disable = True
-    self.sd.CS_prev.cruiseState.enabled = False  # was off
-    cs = self._make_cs(cruise_enabled=True)       # now on → rising edge
-    cs_sp = self._make_cs_sp()
-    self.mads.update(cs, cs_sp)
-    assert not self.mads.user_latched_disable
-
-  def test_latch_blocks_pcm_reengage(self):
-    """While latched, block_unified_engagement_mode() returns True, preventing UEM re-engage."""
-    self.mads.user_latched_disable = True
-    assert self.mads.block_unified_engagement_mode()
-
-  # --- scenario 5 ---------------------------------------------------------------
+  def _make_cs_sp(self):
+    return structs.CarStateSP()
 
   def test_tesla_lkas_button_unchanged(self):
     """Tesla: lkas button while enabled + selfdrive.enabled → manualSteeringRequired (regression)."""
@@ -256,8 +206,6 @@ class TestMADSStalkDisable:
 
     assert self.sd.events_sp.has(EventNameSP.manualSteeringRequired)
 
-  # --- scenario 6 ---------------------------------------------------------------
-
   def test_hyundai_lda_button_unchanged(self):
     """Hyundai LDA: lkas button while MADS disabled → lkasEnable (regression)."""
     self.sd.CP.brand = "hyundai"
@@ -273,18 +221,3 @@ class TestMADSStalkDisable:
     mads.update(cs, cs_sp)
 
     assert self.sd.events_sp.has(EventNameSP.lkasEnable)
-
-  # --- scenario 7 ---------------------------------------------------------------
-
-  def test_up2_during_paused_state_transitions_to_disabled(self):
-    """UP_2 from paused state transitions to State.disabled and sets latch."""
-    self.mads.enabled = True
-    self.mads.state_machine.state = State.paused
-    # No cruise rising edge in this frame
-    self.sd.CS_prev.cruiseState.enabled = False
-    cs = self._make_cs(cruise_enabled=False)
-    cs_sp = self._make_cs_sp(mads_disable_request=True)
-    self.mads.update(cs, cs_sp)
-    assert self.mads.user_latched_disable
-    assert self.sd.events_sp.has(EventNameSP.madsDisabledByStalk)
-    assert self.mads.state_machine.state == State.disabled
