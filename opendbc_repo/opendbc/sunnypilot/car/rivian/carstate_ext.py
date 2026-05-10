@@ -22,6 +22,20 @@ MIN_SET_SPEED = 20 * CV.MPH_TO_MS
 RIVIAN_DIRECTION_SIGN: int = -1
 
 
+def _append_button_event(ret: structs.CarState, *, pressed: bool, button_type: structs.CarState.ButtonEvent.Type) -> None:
+  """Append a ButtonEvent to ret.buttonEvents without losing existing entries.
+
+  ret.buttonEvents is a capnp builder list; iterating it yields readers tied to
+  the current allocation. Reassigning the list invalidates those readers, so a
+  naive `list(ret.buttonEvents) + [new]` corrupts the existing entries to
+  default values. Copy each existing entry through a fresh detached
+  ButtonEvent builder so the values survive the reassignment.
+  """
+  events = [structs.CarState.ButtonEvent(pressed=be.pressed, type=be.type) for be in ret.buttonEvents]
+  events.append(structs.CarState.ButtonEvent(pressed=pressed, type=button_type))
+  ret.buttonEvents = events
+
+
 class CarStateExt:
   def __init__(self, CP: structs.CarParams, CP_SP: structs.CarParamsSP):
     self.CP = CP
@@ -62,7 +76,7 @@ class CarStateExt:
           #   pressed=True  → +1 step in PERSONALITY_RANK_ORDER (more aggressive)
           #   pressed=False → -1 step (more relaxed)
           pressed = (RIVIAN_DIRECTION_SIGN * sign) > 0
-          ret.buttonEvents = [structs.CarState.ButtonEvent(pressed=pressed, type=ButtonType.gapAdjustCruise)]
+          _append_button_event(ret, pressed=pressed, button_type=ButtonType.gapAdjustCruise)
         self.distance_button = right_scroll
 
       # button logic for set-speed
@@ -93,7 +107,7 @@ class CarStateExt:
         self.set_speed = ret.vEgoCluster
 
       # VDM_UserAdasRequest: 0=IDLE, 1=UP_1, 2=UP_2, 3=DOWN_1, 4=DOWN_2.
-      # UP_2 → madsDisableRequest is handled in update() unconditionally; here
+      # UP_2 → ButtonEvent.cancel is handled in update() unconditionally; here
       # we only consume DOWN_1/DOWN_2 for set-speed-on-first-stalk-down.
       adas_vals = list(cp.vl_all["VDM_AdasSts"]["VDM_UserAdasRequest"]) or [self.prev_user_adas_req]
       stalk_down = any(v in (3, 4) for v in adas_vals)
@@ -109,20 +123,20 @@ class CarStateExt:
       ret.rightBlindspot = cp_park.vl["BSM_BlindSpotIndicator_Fwd"]["BSM_BlindSpotIndicator_Right"] != 0
 
   def update(self, ret: structs.CarState, ret_sp: structs.CarStateSP, can_parsers: dict[StrEnum, CANParser]) -> None:
-    # UP_2 → madsDisableRequest runs unconditionally for all Rivians.
-    # Stock-cruise users (op-long=False) need MADS to disable while cruise
-    # stays engaged; VDM_UserAdasRequest is on Bus.pt (always parsed), and
-    # LONGITUDINAL_HARNESS_UPGRADE is a hardware-tap marker, not a feature
-    # gate. Do NOT re-gate.
+    # UP_2 → ButtonEvent.cancel runs unconditionally for all Rivians; stock-cruise
+    # (op-long=False) users need to disengage too. VDM_UserAdasRequest is on
+    # Bus.pt (always parsed). Do NOT re-gate on LONGITUDINAL_HARNESS_UPGRADE.
     cp = can_parsers[Bus.pt]
     # vl_all (not vl): UP_2 fires for one CAN frame at 50Hz; vl drops it when the
     # tick's last sample is IDLE. Empty-list fallback to prev (not cp.vl) avoids
     # spurious edges from stale vl on parser ticks with no new frames.
     vals = list(cp.vl_all["VDM_AdasSts"]["VDM_UserAdasRequest"]) or [self.prev_user_adas_req]
     if self.prev_user_adas_req != 2 and 2 in vals:
-      ret_sp.madsDisableRequest = True
+      _append_button_event(ret, pressed=True, button_type=ButtonType.cancel)
     self.prev_user_adas_req = int(vals[-1])
 
+    # update_longitudinal_upgrade runs second and may also append to
+    # ret.buttonEvents (gapAdjustCruise on scroll-wheel delta).
     if self.CP_SP.flags & RivianFlagsSP.LONGITUDINAL_HARNESS_UPGRADE:
       self.update_longitudinal_upgrade(ret, ret_sp, can_parsers)
 
