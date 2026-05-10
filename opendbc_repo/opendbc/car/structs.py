@@ -34,22 +34,26 @@ def auto_field():
 
 @dataclass_transform()
 def auto_dataclass(cls=None, /, **kwargs):
-  cls_annotations = cls.__dict__.get('__annotations__', {})
-  for name, typ in cls_annotations.items():
-    current_value = getattr(cls, name)
-    if current_value is AUTO_OBJ:
-      origin_typ = get_origin(typ) or typ
-      if isinstance(origin_typ, str):
-        raise TypeError(f"Forward references are not supported for auto_field: '{origin_typ}'. Use a default_factory with lambda instead.")
-      elif origin_typ in (int, float, str, bytes, list, tuple, bool) or is_dataclass(origin_typ):
-        setattr(cls, name, field(default_factory=origin_typ))
-      elif issubclass(origin_typ, Enum):  # first enum is the default
-        setattr(cls, name, field(default=next(iter(origin_typ))))
-      else:
-        raise TypeError(f"Unsupported type for auto_field: {origin_typ}")
+  def wrap(cls):
+    cls_annotations = cls.__dict__.get('__annotations__', {})
+    for name, typ in cls_annotations.items():
+      current_value = getattr(cls, name)
+      if current_value is AUTO_OBJ:
+        origin_typ = get_origin(typ) or typ
+        if isinstance(origin_typ, str):
+          raise TypeError(f"Forward references are not supported for auto_field: '{origin_typ}'. Use a default_factory with lambda instead.")
+        elif origin_typ in (int, float, str, bytes, list, tuple, bool) or is_dataclass(origin_typ):
+          setattr(cls, name, field(default_factory=origin_typ))
+        elif issubclass(origin_typ, Enum):  # first enum is the default
+          setattr(cls, name, field(default=next(iter(origin_typ))))
+        else:
+          raise TypeError(f"Unsupported type for auto_field: {origin_typ}")
 
-  # TODO: use slots, this prevents accidentally setting attributes that don't exist
-  return _dataclass(cls, **kwargs)
+    return _dataclass(cls, **kwargs)
+
+  # Support both @auto_dataclass (cls is the class) and @auto_dataclass(slots=True)
+  # (cls is None, decorator returns the wrap function for later application).
+  return wrap if cls is None else wrap(cls)
 
 
 class StrEnum(_StrEnum):
@@ -167,6 +171,6 @@ class CarControlSP:
     bytes = auto()
 
 
-@auto_dataclass
+@auto_dataclass(slots=True)
 class CarStateSP:
   speedLimit: float = auto_field()
