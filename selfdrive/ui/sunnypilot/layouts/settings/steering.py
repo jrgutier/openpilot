@@ -43,6 +43,11 @@ class SteeringLayout(Widget):
     self._mads_full_desc = tr("This platform supports all MADS settings.")
     self._mads_check_compat_desc = tr("Start the vehicle to check vehicle compatibility.")
 
+    self._nnlc_base_desc = tr("Use a vehicle-specific neural network model for lateral control torque feedforward.")
+    self._nnlc_check_compat_desc = tr("Start the vehicle to check NN model compatibility.")
+    self._nnlc_no_match_desc = tr("No matching NN model for this vehicle — NNLC unavailable.")
+    self._nnlc_not_available_desc = tr("Not available on this platform.")
+
     self._mads_toggle = toggle_item_sp(
       param="Mads",
       title=lambda: tr("Modular Assistive Driving System (MADS)"),
@@ -94,7 +99,7 @@ class SteeringLayout(Widget):
     self._nnlc_toggle = toggle_item_sp(
       param="NeuralNetworkLateralControl",
       title=lambda: tr("Neural Network Lateral Control (NNLC)"),
-      description=""
+      description=self._nnlc_base_desc,
     )
 
     items = [
@@ -134,6 +139,23 @@ class SteeringLayout(Widget):
       ui_state.params.remove("EnforceTorqueControl")
       ui_state.params.remove("NeuralNetworkLateralControl")
       torque_allowed = False
+
+    if ui_state.CP is None:
+      nnlc_status_desc = self._nnlc_check_compat_desc
+    elif not torque_allowed:
+      nnlc_status_desc = self._nnlc_not_available_desc
+    elif ui_state.CP_SP is None:
+      nnlc_status_desc = self._nnlc_check_compat_desc
+    else:
+      nnlc_model = ui_state.CP_SP.neuralNetworkLateralControl.model
+      nnlc_fuzzy = ui_state.CP_SP.neuralNetworkLateralControl.fuzzyFingerprint
+      if nnlc_model.name == "MOCK":
+        nnlc_status_desc = self._nnlc_no_match_desc
+      elif nnlc_fuzzy:
+        nnlc_status_desc = tr("Matched model: {name} (fuzzy match)").format(name=nnlc_model.name)
+      else:
+        nnlc_status_desc = tr("Matched model: {name} (exact match)").format(name=nnlc_model.name)
+    self._nnlc_toggle.set_description(f"<b>{nnlc_status_desc}</b><br><br>{self._nnlc_base_desc}")
 
     self._mads_toggle.action_item.set_enabled(ui_state.is_offroad())
     self._mads_settings_button.action_item.set_enabled(ui_state.is_offroad() and self._mads_toggle.action_item.get_state())
