@@ -8,7 +8,7 @@ See the LICENSE.md file in the root directory for more details.
 import pytest
 from pytest_mock import MockerFixture
 
-from cereal import custom
+from cereal import custom, log
 from opendbc.car import structs
 from opendbc.car.hyundai.values import HyundaiFlags
 from openpilot.common.realtime import DT_CTRL
@@ -18,6 +18,7 @@ from openpilot.selfdrive.selfdrived.events import ET, NormalPermanentAlert, Even
 from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP, EVENTS_SP
 
 State = custom.ModularAssistiveDrivingSystem.ModularAssistiveDrivingSystemState
+EventName = log.OnroadEvent.EventName
 EventNameSP = custom.OnroadEventSP.EventName
 
 # The event types that maintain the current state
@@ -221,3 +222,37 @@ class TestMADSBrandLkasButton:
     mads.update(cs, cs_sp)
 
     assert self.sd.events_sp.has(EventNameSP.lkasEnable)
+
+  def test_rivian_button_cancel_disengages_mads(self):
+    """Rivian UP_2 → ButtonEvent.cancel must transition MADS state machine to disabled."""
+    self.sd.CP.brand = "rivian"
+    mads = ModularAssistiveDrivingSystem(self.sd)
+    assert mads.cancel_disengages_mads
+    mads.enabled = True
+    mads.state_machine.state = State.enabled
+
+    self.sd.events.add(EventName.buttonCancel)
+    be = structs.CarState.ButtonEvent(pressed=True, type=structs.CarState.ButtonEvent.Type.cancel)
+    cs = self._make_cs(button_events=[be])
+    cs_sp = self._make_cs_sp()
+    mads.update(cs, cs_sp)
+
+    assert mads.state_machine.state == State.disabled
+    assert not mads.enabled
+    assert not mads.active
+
+  def test_hyundai_button_cancel_does_not_disengage_mads(self):
+    """Non-Rivian: ButtonEvent.cancel must NOT disengage MADS lateral (stock-cruise semantics)."""
+    self.sd.CP.brand = "hyundai"
+    mads = ModularAssistiveDrivingSystem(self.sd)
+    assert not mads.cancel_disengages_mads
+    mads.enabled = True
+    mads.state_machine.state = State.enabled
+
+    self.sd.events.add(EventName.buttonCancel)
+    be = structs.CarState.ButtonEvent(pressed=True, type=structs.CarState.ButtonEvent.Type.cancel)
+    cs = self._make_cs(button_events=[be])
+    cs_sp = self._make_cs_sp()
+    mads.update(cs, cs_sp)
+
+    assert mads.state_machine.state == State.enabled

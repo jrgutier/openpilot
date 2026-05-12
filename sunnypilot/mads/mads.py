@@ -51,6 +51,11 @@ class ModularAssistiveDrivingSystem:
     if self.CP.brand in MADS_NO_ACC_MAIN_BUTTON:
       self.no_main_cruise = True
 
+    # Rivian's UP_2 stalk push is a full kill-switch (lateral + longitudinal).
+    # Other brands cancel only ACC and keep MADS lateral active, so they strip
+    # buttonCancel from MADS' event view (line 196).
+    self.cancel_disengages_mads = self.CP.brand == "rivian"
+
     # read params on init
     self.enabled_toggle = self.params.get_bool("Mads")
     self.main_enabled_toggle = self.params.get_bool("MadsMainCruiseAllowed")
@@ -193,7 +198,8 @@ class ModularAssistiveDrivingSystem:
       self.events_sp.add(EventNameSP.controlsMismatchLateral)
 
     self.events.remove(EventName.pcmDisable)
-    self.events.remove(EventName.buttonCancel)
+    if not self.cancel_disengages_mads:
+      self.events.remove(EventName.buttonCancel)
     self.events.remove(EventName.pedalPressed)
     self.events.remove(EventName.wrongCruiseMode)
 
