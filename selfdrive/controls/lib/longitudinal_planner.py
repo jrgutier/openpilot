@@ -170,7 +170,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       self.output_should_stop = output_should_stop_mpc
 
     lead = sm['radarState'].leadOne
-    if lead.status and lead.vRel < 0.0:
+    if lead.status and lead.vRel < -3.0:
       accel_clip[1] = min(accel_clip[1], 0.0)
 
     for idx in range(2):
