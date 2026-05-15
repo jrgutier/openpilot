@@ -172,6 +172,11 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     for idx in range(2):
       accel_clip[idx] = np.clip(accel_clip[idx], self.prev_accel_clip[idx] - 0.05, self.prev_accel_clip[idx] + 0.05)
     self.output_a_target = np.clip(output_a_target, accel_clip[0], accel_clip[1])
+
+    lead = sm['radarState'].leadOne
+    if lead.status and lead.vRel < 0.0:
+      self.output_a_target = min(self.output_a_target, 0.0)
+
     self.prev_accel_clip = accel_clip
 
   def publish(self, sm, pm):
