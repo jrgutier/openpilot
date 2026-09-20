@@ -3,9 +3,12 @@ import fcntl
 import os
 import queue
 import struct
+import subprocess
+import sys
 import threading
 import time
 from collections import OrderedDict, namedtuple
+from contextlib import contextmanager
 
 import openpilot.cereal.messaging as messaging
 from openpilot.cereal import log
@@ -15,16 +18,18 @@ from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_HW
 from openpilot.selfdrive.selfdrived.alertmanager import set_offroad_alert
-from openpilot.common.hardware import HARDWARE, TICI
-from openpilot.common.hardware.usb import get_usb_state, set_usb_state
+from openpilot.common.hardware import HARDWARE, COMMA_HARDWARE
+from openpilot.common.basedir import BASEDIR
+from openpilot.common.git import get_short_branch
+from openpilot.common.hardware.usb import CHESTNUT_FW_VERSION, CHESTNUT_USB_PRODUCT, get_usb_state, get_usb_topology, is_chestnut_usb_id, set_usb_state
 from openpilot.common.linux import LinuxSystemStats
 from openpilot.system.loggerd.config import get_available_percent
 from openpilot.common.swaglog import cloudlog
 from openpilot.sunnypilot.system.statsd import statlog
 from openpilot.system.hardware.power_monitoring import PowerMonitoring
 from openpilot.system.hardware.fan_controller import FanController
+from openpilot.system.hardware.chestnut.status import ChestnutStatus
 from openpilot.common.version import terms_version, training_version, get_build_metadata, terms_version_sp
-
 
 ThermalStatus = log.DeviceState.ThermalStatus
 NetworkType = log.DeviceState.NetworkType
@@ -34,6 +39,153 @@ TEMP_TAU = 5.   # 5s time constant
 DISCONNECT_TIMEOUT = 5.  # wait 5 seconds before going offroad after disconnect so you get an alert
 PANDA_STATES_TIMEOUT = round(1000 / SERVICE_LIST['pandaStates'].frequency * 1.5)  # 1.5x the expected pandaState frequency
 ONROAD_CYCLE_TIME = 1  # seconds to wait offroad after requesting an onroad cycle
+
+# Diagnostic timing for the deviceState publish loop. hardware_thread runs at 2 Hz, and a stall of a
+# few seconds stops deviceState altogether, which selfdrived reports as a communication issue and
+# which has disengaged the car mid drive. Log analysis narrowed the stall to the params calls and the
+# offroad alert calls in the loop below but could not name the blocking call, because nothing on the
+# device recorded how long any single call took. These two classes record exactly that, and report the
+# breakdown whenever one iteration runs long.
+HW_LOOP_SLOW_MS = 100.
+
+# Phases that block on purpose and must not count as time the device lost. sm.update() polls
+# pandaStates, which publishes at 10 Hz, with a 1.5x timeout, so the roughly 100 ms it spends waiting
+# is how this loop paces itself. Judging the threshold on the raw total counted that wait as work and
+# fired on nearly every iteration: 4268 reports in one 14 minute drive, 3.4 MB of undecimated log, of
+# which 7 were real. These phases are still reported, because a publisher in trouble shows up as one
+# of them repeatedly hitting its timeout, but they are left out of the "was this slow" decision.
+BLOCKING_PHASES = ("sm_update",)
+
+
+class LoopTimer:
+  """Collects per phase timings for a single hardware_thread iteration and reports slow ones.
+
+  The cost is two clock reads per measurement, so this stays enabled while driving. A report is only
+  emitted when an iteration spends more than HW_LOOP_SLOW_MS doing actual work, so a healthy device
+  stays silent. "Actual work" is the whole iteration minus BLOCKING_PHASES, the waits this loop takes
+  deliberately; see the note there for why the difference matters.
+  """
+
+  def __init__(self, slow_ms: float):
+    self.slow_ms = slow_ms
+    self.started = 0.
+    self.phases: dict[str, float] = {}
+    self.params: dict[str, float] = {}
+
+  def start(self) -> None:
+    self.phases = {}
+    self.params = {}
+    self.started = time.monotonic()
+
+  def record(self, name: str, ms: float) -> None:
+    # summed, so a key touched twice in one iteration still reports its full cost
+    self.params[name] = self.params.get(name, 0.) + ms
+
+  @contextmanager
+  def phase(self, name: str):
+    t0 = time.monotonic()
+    try:
+      yield
+    finally:
+      self.phases[name] = self.phases.get(name, 0.) + (time.monotonic() - t0) * 1e3
+
+  def report(self) -> None:
+    total_ms = (time.monotonic() - self.started) * 1e3
+    blocked_ms = sum(self.phases.get(n, 0.) for n in BLOCKING_PHASES)
+    work_ms = total_ms - blocked_ms
+    if work_ms < self.slow_ms:
+      return
+    # params timings are nested inside the phase timings, so the two are reported separately
+    slow_phases = {n: round(ms, 1) for n, ms in self.phases.items() if ms >= 1.}
+    slow_params = {n: round(ms, 1) for n, ms in self.params.items() if ms >= 1.}
+    # a deliberate wait can never be the culprit this report exists to name, so it is not a candidate
+    # for "worst" even though it stays in phases for anyone reading the whole picture
+    candidates = [kv for kv in list(slow_phases.items()) + list(slow_params.items()) if kv[0] not in BLOCKING_PHASES]
+    worst = max(candidates, key=lambda kv: kv[1], default=("none", 0.))
+    # error=True puts this in errorLogMessage, which is not decimated and so survives into qlogs
+    cloudlog.event("hardwared_slow_loop", error=True, work_ms=round(work_ms, 1),
+                   total_ms=round(total_ms, 1), blocked_ms=round(blocked_ms, 1),
+                   worst=worst[0], worst_ms=worst[1], phases=slow_phases, params=slow_params)
+
+
+class TimedParams:
+  """Params wrapper that times every read and write and reports the key that was slow.
+
+  On this base put(..., block=True) is a synchronous locked fsync, so any params call in the loop can
+  block on the params lock while another process holds it. Wrapping the object keeps the timing in one
+  place rather than scattering it over the dozen call sites in hardware_thread. Anything not listed
+  here (remove, get_param_path, ...) passes straight through untimed.
+  """
+
+  def __init__(self, params, timer: LoopTimer):
+    self._params = params
+    self._timer = timer
+
+  def __getattr__(self, name):
+    return getattr(self._params, name)
+
+  def _timed(self, op: str, fn, key, *args, **kwargs):
+    t0 = time.monotonic()
+    try:
+      return fn(key, *args, **kwargs)
+    finally:
+      self._timer.record(f"{op}:{key}", (time.monotonic() - t0) * 1e3)
+
+  def get(self, key, *args, **kwargs):
+    return self._timed("get", self._params.get, key, *args, **kwargs)
+
+  def get_bool(self, key, *args, **kwargs):
+    return self._timed("get_bool", self._params.get_bool, key, *args, **kwargs)
+
+  def put(self, key, *args, **kwargs):
+    return self._timed("put", self._params.put, key, *args, **kwargs)
+
+  def put_bool(self, key, *args, **kwargs):
+    return self._timed("put_bool", self._params.put_bool, key, *args, **kwargs)
+
+
+class Chestnut:
+  # flash offroad, modeld ignores chestnut until the product string matches
+  MAX_ATTEMPTS = 3
+  RETRY_INTERVAL = 20.
+
+  def __init__(self):
+    self.thread: threading.Thread | None = None
+    self.attempts = 0
+    self.last_attempt = 0.
+    self.flashed = False
+    self.mismatch = False
+
+  @property
+  def failed(self) -> bool:
+    return self.mismatch and self.attempts >= self.MAX_ATTEMPTS and self.thread is not None and not self.thread.is_alive() and not self.flashed
+
+  def flash(self) -> None:
+    ret = subprocess.run(["sudo", sys.executable, os.path.join(BASEDIR, "openpilot/system/hardware/chestnut/flash.py"), CHESTNUT_FW_VERSION],
+                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=False)
+    cloudlog.event("chestnut flash done", returncode=ret.returncode, output=ret.stdout[-1000:], error=ret.returncode != 0)
+    self.flashed = ret.returncode == 0
+
+  def update(self, offroad: bool, usb_state: list[dict]) -> None:
+    self.mismatch = any(is_chestnut_usb_id(d["vendorId"], d["productId"], include_bootloader=True) and
+                        d["product"] != CHESTNUT_USB_PRODUCT for d in usb_state)
+    if not self.mismatch:
+      self.flashed = False
+      return
+
+    if not offroad or self.flashed or self.attempts >= self.MAX_ATTEMPTS:
+      return
+    if self.thread is not None and self.thread.is_alive():
+      return
+    if time.monotonic() - self.last_attempt < self.RETRY_INTERVAL:
+      return
+
+    self.attempts += 1
+    self.last_attempt = time.monotonic()
+    cloudlog.warning(f"chestnut firmware out of date, flashing (attempt {self.attempts})")
+    self.thread = threading.Thread(target=self.flash, daemon=True)
+    self.thread.start()
+
 
 ThermalBand = namedtuple("ThermalBand", ['min_temp', 'max_temp'])
 HardwareState = namedtuple("HardwareState", ['network_type', 'network_info', 'network_strength', 'network_stats',
@@ -106,10 +258,15 @@ def hw_state_thread(end_event, hw_queue):
   """Handles non critical hardware state, and sends over queue"""
   count = 0
   prev_hw_state = None
+  prev_usb_topology = set()
 
   while not end_event.is_set():
-    # these are expensive calls. update every 10s
-    if (count % int(10. / DT_HW)) == 0:
+    usb_topology = get_usb_topology()
+    usb_changed = usb_topology != prev_usb_topology
+
+    # these are expensive calls. update every 10s or when USB devices change
+    if (count % int(10. / DT_HW)) == 0 or usb_changed:
+      prev_usb_topology = usb_topology
       try:
         network_type = HARDWARE.get_network_type()
         modem_temps = HARDWARE.get_modem_temperatures()
@@ -144,7 +301,7 @@ def hw_state_thread(end_event, hw_queue):
 def hardware_thread(end_event, hw_queue) -> None:
   system_stats = LinuxSystemStats()
   pm = messaging.PubMaster(['deviceState'])
-  sm = messaging.SubMaster(["peripheralState", "gpsLocationExternal", "selfdriveState", "pandaStates"], poll="pandaStates")
+  sm = messaging.SubMaster(["peripheralState", "gpsLocationExternal", "selfdriveState", "pandaStates", "chestnutState"], poll="pandaStates")
 
   count = 0
 
@@ -180,7 +337,8 @@ def hardware_thread(end_event, hw_queue) -> None:
   pwrsave = False
   offroad_cycle_count = 0
 
-  params = Params()
+  loop_timer = LoopTimer(HW_LOOP_SLOW_MS)
+  params = TimedParams(Params(), loop_timer)
   power_monitor = PowerMonitoring()
 
   uptime_offroad: float = params.get("UptimeOffroad", return_default=True)
@@ -191,9 +349,14 @@ def hardware_thread(end_event, hw_queue) -> None:
   thermal_config = HARDWARE.get_thermal_config()
 
   fan_controller = FanController(int(1./DT_HW))
+  chestnut = Chestnut()
+  chestnut_status = ChestnutStatus()
+  branch = get_short_branch()
 
   while not end_event.is_set():
-    sm.update(PANDA_STATES_TIMEOUT)
+    loop_timer.start()
+    with loop_timer.phase("sm_update"):
+      sm.update(PANDA_STATES_TIMEOUT)
 
     pandaStates = sm['pandaStates']
     peripheralState = sm['peripheralState']
@@ -221,6 +384,7 @@ def hardware_thread(end_event, hw_queue) -> None:
     # Run at 2Hz, plus either edge of ignition
     ign_edge = (started_ts is not None) != all(onroad_conditions.values())
     if (sm.frame % round(SERVICE_LIST['pandaStates'].frequency * DT_HW) != 0) and not ign_edge:
+      loop_timer.report()
       continue
 
     msg = messaging.new_message('deviceState', valid=True)
@@ -232,10 +396,11 @@ def hardware_thread(end_event, hw_queue) -> None:
     except queue.Empty:
       pass
 
-    msg.deviceState.freeSpacePercent = get_available_percent(default=100.0)
-    msg.deviceState.memoryUsagePercent = int(round(system_stats.memory_usage_percent()))
-    msg.deviceState.gpuUsagePercent = int(round(HARDWARE.get_gpu_usage_percent()))
-    online_cpu_usage = [int(round(n)) for n in system_stats.cpu_usage_percent()]
+    with loop_timer.phase("device_stats"):
+      msg.deviceState.freeSpacePercent = get_available_percent(default=100.0)
+      msg.deviceState.memoryUsagePercent = int(round(system_stats.memory_usage_percent()))
+      msg.deviceState.gpuUsagePercent = int(round(HARDWARE.get_gpu_usage_percent()))
+      online_cpu_usage = [int(round(n)) for n in system_stats.cpu_usage_percent()]
     offline_cpu_usage = [0., ] * (len(msg.deviceState.cpuTempC) - len(online_cpu_usage))
     msg.deviceState.cpuUsagePercent = online_cpu_usage + offline_cpu_usage
 
@@ -248,10 +413,17 @@ def hardware_thread(end_event, hw_queue) -> None:
 
     msg.deviceState.modemTempC = last_hw_state.modem_temps
 
-    msg.deviceState.screenBrightnessPercent = HARDWARE.get_screen_brightness()
+    with loop_timer.phase("screen_brightness"):
+      msg.deviceState.screenBrightnessPercent = HARDWARE.get_screen_brightness()
 
-    set_usb_state(msg.deviceState, last_hw_state.usb_state)
-
+    with loop_timer.phase("chestnut"):
+      set_usb_state(msg.deviceState, last_hw_state.usb_state)
+      chestnut.update(started_ts is None, last_hw_state.usb_state)
+      chestnut_state = sm["chestnutState"]
+      chestnut_valid = sm.alive["chestnutState"] and sm.valid["chestnutState"]
+      chestnut_status.update(started_ts is None, branch, last_hw_state.usb_state, chestnut.failed,
+                             params.get_bool("ChestnutLoading"), params.get("ChestnutActive"),
+                             chestnut_state if chestnut_valid else None, set_offroad_alert_if_changed)
     # this subset is only used for offroad
     temp_sources = [
       msg.deviceState.memoryTempC,
@@ -308,17 +480,20 @@ def hardware_thread(end_event, hw_queue) -> None:
     # only allow going onroad when:
     # - TIZI, or
     # - TICI and channel_type is "tici"
-    build_metadata = get_build_metadata()
-    is_unsupported_combo = TICI and HARDWARE.get_device_type() == "tici" and build_metadata.channel_type != "tici"
+    with loop_timer.phase("build_metadata"):
+      build_metadata = get_build_metadata()
+    is_unsupported_combo = COMMA_HARDWARE and HARDWARE.get_device_type() == "tici" and build_metadata.channel_type != "tici"
     startup_conditions["not_tici"] = not is_unsupported_combo
     onroad_conditions["not_tici"] = not is_unsupported_combo
-    set_offroad_alert("Offroad_TiciSupport", is_unsupported_combo, extra_text=build_metadata.channel)
+    with loop_timer.phase("offroad_alert_tici"):
+      set_offroad_alert("Offroad_TiciSupport", is_unsupported_combo, extra_text=build_metadata.channel)
 
     # if the temperature enters the danger zone, go offroad to cool down
     onroad_conditions["device_temp_good"] = thermal_status < ThermalStatus.critical
     extra_text = f"{offroad_comp_temp:.1f}C"
     show_alert = (not onroad_conditions["device_temp_good"] or not startup_conditions["device_temp_engageable"]) and onroad_conditions["ignition"]
-    set_offroad_alert_if_changed("Offroad_TemperatureTooHigh", show_alert, extra_text=extra_text)
+    with loop_timer.phase("offroad_alert_temp"):
+      set_offroad_alert_if_changed("Offroad_TemperatureTooHigh", show_alert, extra_text=extra_text)
 
     if show_alert:
       msg.deviceState.fanSpeedPercentDesired = 100
@@ -338,16 +513,18 @@ def hardware_thread(end_event, hw_queue) -> None:
         params.put_bool("IsEngaged", engaged, block=True)
         engaged_prev = engaged
 
-      try:
-        with open('/dev/kmsg', 'w') as kmsg:
-          kmsg.write(f"<3>[hardware] engaged: {engaged}\n")
-      except Exception:
-        pass
+      with loop_timer.phase("kmsg"):
+        try:
+          with open('/dev/kmsg', 'w') as kmsg:
+            kmsg.write(f"<3>[hardware] engaged: {engaged}\n")
+        except Exception:
+          pass
 
-    should_pwrsave = not onroad_conditions["ignition"] and msg.deviceState.screenBrightnessPercent < 1e-3
-    if should_pwrsave != pwrsave or (count == 0):
-      HARDWARE.set_power_save(should_pwrsave)
-    pwrsave = should_pwrsave
+    with loop_timer.phase("set_power_save"):
+      should_pwrsave = not onroad_conditions["ignition"] and msg.deviceState.screenBrightnessPercent < 1e-3
+      if should_pwrsave != pwrsave or (count == 0):
+        HARDWARE.set_power_save(should_pwrsave)
+      pwrsave = should_pwrsave
 
     if should_start:
       off_ts = None
@@ -376,16 +553,17 @@ def hardware_thread(end_event, hw_queue) -> None:
     # will rarely exceed 5V so 9V is set as our buffer between desk use and car use.
     params.put_bool("GithubRunnerSufficientVoltage", ((voltage or 0) and voltage > 9000))
 
-    power_monitor.calculate(voltage, onroad_conditions["ignition"])
-    msg.deviceState.offroadPowerUsageUwh = power_monitor.get_power_used()
-    msg.deviceState.carBatteryCapacityUwh = max(0, power_monitor.get_car_battery_capacity())
-    current_power_draw = HARDWARE.get_current_power_draw()
-    statlog.sample("power_draw", current_power_draw)
-    msg.deviceState.powerDrawW = current_power_draw
+    with loop_timer.phase("power_monitor"):
+      power_monitor.calculate(voltage, onroad_conditions["ignition"])
+      msg.deviceState.offroadPowerUsageUwh = power_monitor.get_power_used()
+      msg.deviceState.carBatteryCapacityUwh = max(0, power_monitor.get_car_battery_capacity())
+      current_power_draw = HARDWARE.get_current_power_draw()
+      statlog.sample("power_draw", current_power_draw)
+      msg.deviceState.powerDrawW = current_power_draw
 
-    som_power_draw = HARDWARE.get_som_power_draw()
-    statlog.sample("som_power_draw", som_power_draw)
-    msg.deviceState.somPowerDrawW = som_power_draw
+      som_power_draw = HARDWARE.get_som_power_draw()
+      statlog.sample("som_power_draw", som_power_draw)
+      msg.deviceState.somPowerDrawW = som_power_draw
 
     # Check if we need to shut down
     if power_monitor.should_shutdown(onroad_conditions["ignition"], in_car, off_ts, started_seen):
@@ -400,7 +578,8 @@ def hardware_thread(end_event, hw_queue) -> None:
       msg.deviceState.lastAthenaPingTime = last_ping
 
     msg.deviceState.thermalStatus = thermal_status
-    pm.send("deviceState", msg)
+    with loop_timer.phase("publish"):
+      pm.send("deviceState", msg)
 
     statlog.gauge("free_space_percent", msg.deviceState.freeSpacePercent)
     statlog.gauge("gpu_usage_percent", msg.deviceState.gpuUsagePercent)
@@ -430,7 +609,8 @@ def hardware_thread(end_event, hw_queue) -> None:
         'location': (strip_deprecated_keys(sm["gpsLocationExternal"].to_dict()) if sm.alive["gpsLocationExternal"] else None),
         'deviceState': strip_deprecated_keys(msg.to_dict())
       }
-      cloudlog.event("STATUS_PACKET", **dat)
+      with loop_timer.phase("status_packet"):
+        cloudlog.event("STATUS_PACKET", **dat)
 
       # save last one before going onroad
       if rising_edge_started:
@@ -454,6 +634,7 @@ def hardware_thread(end_event, hw_queue) -> None:
 
     count += 1
     should_start_prev = should_start
+    loop_timer.report()
 
 
 def main():
@@ -465,7 +646,7 @@ def main():
     threading.Thread(target=hardware_thread, args=(end_event, hw_queue)),
   ]
 
-  if TICI:
+  if COMMA_HARDWARE:
     threads.append(threading.Thread(target=touch_thread, args=(end_event,)))
 
   for t in threads:
