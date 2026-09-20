@@ -6,6 +6,7 @@ from openpilot.cereal import log
 from opendbc.car.lateral import FRICTION_THRESHOLD, get_friction
 from openpilot.common.constants import ACCELERATION_DUE_TO_GRAVITY
 from openpilot.common.filter_simple import FirstOrderFilter
+from openpilot.common.params import Params
 from openpilot.selfdrive.controls.lib.latcontrol import LatControl
 from openpilot.common.pid import PIDController
 
@@ -34,6 +35,12 @@ JERK_GAIN = 0.3
 LAT_ACCEL_REQUEST_BUFFER_SECONDS = 1.0
 VERSION = 1
 
+# UI-tunable Kp multipliers layered on top of the PID's internal KP_INTERP schedule
+# to tame oscillation from the stock gains without replacing them.
+KP_UI_PARAMS = ("KpLowSpeed", "KpMidSpeed", "KpHighSpeed")
+KP_UI_SPEED_BREAKPOINTS = (6.7, 15.6, 33.5)  # m/s, ~15/35/75 mph
+KP_UI_MIN, KP_UI_MAX = 0.1, 5.0  # matches Tuning menu slider range
+
 class LatControlTorque(LatControl):
   def __init__(self, CP, CP_SP, CI, dt):
     super().__init__(CP, CP_SP, CI, dt)
@@ -48,7 +55,22 @@ class LatControlTorque(LatControl):
     self.lookahead_frames = int(JERK_LOOKAHEAD_SECONDS / self.dt)
     self.jerk_filter = FirstOrderFilter(0.0, 1 / (2 * np.pi * LP_FILTER_CUTOFF_HZ), self.dt)
 
+    self._params = Params()
+    self.kp_multipliers = self._load_kp_multipliers(self._params.get)
+    self._param_update_frame = 0
+
     self.extension = LatControlTorqueExt(self, CP, CP_SP, CI)
+
+  @staticmethod
+  def _load_kp_multipliers(param_getter) -> list[float]:
+    def _read(key: str) -> float:
+      raw = param_getter(key)
+      try:
+        val = float(raw) if raw is not None else 1.0
+      except (TypeError, ValueError):
+        val = 1.0
+      return max(KP_UI_MIN, min(KP_UI_MAX, val))
+    return [_read(k) for k in KP_UI_PARAMS]
 
   def update_torque_parameters(self, latAccelFactor, latAccelOffset, friction):
     self.torque_params.latAccelFactor = latAccelFactor
@@ -64,6 +86,11 @@ class LatControlTorque(LatControl):
     # Override torque params from extension
     if self.extension.update_override_torque_params(self.torque_params):
       self.update_limits()
+
+    # Re-read Tuning menu params periodically (~6 s at 50 Hz)
+    self._param_update_frame += 1
+    if self._param_update_frame % 300 == 0:
+      self.kp_multipliers = self._load_kp_multipliers(self._params.get)
 
     pid_log = log.ControlsState.LateralTorqueState.new_message()
     pid_log.version = VERSION
@@ -94,8 +121,10 @@ class LatControlTorque(LatControl):
       output_torque = 0.0
       pid_log.active = False
     else:
+      # kp_working layers the UI Kp multipliers over the PID's internal KP_INTERP schedule
+      kp_working = np.interp(CS.vEgo, KP_UI_SPEED_BREAKPOINTS, self.kp_multipliers)
       # do error correction in lateral acceleration space, convert at end to handle non-linear torque responses correctly
-      pid_log.error = float(error)
+      pid_log.error = float(error * kp_working)
 
       freeze_integrator = steer_limited_by_safety or CS.steeringPressed or CS.vEgo < 5
       output_lataccel = self.pid.update(pid_log.error, speed=CS.vEgo, feedforward=ff, freeze_integrator=freeze_integrator)
