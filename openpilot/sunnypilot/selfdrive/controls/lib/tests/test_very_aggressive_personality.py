@@ -20,9 +20,11 @@ exercises the branch where the gate PASSES. test_following_distance.py cannot de
 either -- it never sets the param, so all its cases run with the feature off. Delete the
 gate and both of those still go green. This file is what actually fails.
 """
-import pytest
+import itertools
 
 from openpilot.cereal import log
+from openpilot.common.parameterized import parameterized
+from openpilot.common.test import OpenpilotTestCase
 from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import (
   LongitudinalPlannerSP,
   VERY_AGGRESSIVE_JERK_FACTOR,
@@ -32,6 +34,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import get_j
 
 Personality = log.LongitudinalPersonality
 NON_AGGRESSIVE = [Personality.standard, Personality.relaxed]
+ALL_PERSONALITIES = [Personality.aggressive, *NON_AGGRESSIVE]
 
 
 def _planner(toggle_on: bool) -> LongitudinalPlannerSP:
@@ -52,8 +55,8 @@ def _resolve(toggle_on: bool, personality) -> tuple:
           get_T_FOLLOW(personality, t_follow_override))
 
 
-class TestVeryAggressiveIsAReplacementNotAModifier:
-  @pytest.mark.parametrize("personality", NON_AGGRESSIVE)
+class TestVeryAggressiveIsAReplacementNotAModifier(OpenpilotTestCase):
+  @parameterized.expand(NON_AGGRESSIVE, names=["personality"])
   def test_toggle_on_does_not_touch_other_personalities(self, personality):
     """The regression this gate exists for: Relaxed must stay Relaxed."""
     active, jerk, t_follow = _resolve(True, personality)
@@ -66,23 +69,22 @@ class TestVeryAggressiveIsAReplacementNotAModifier:
     assert (jerk, t_follow) == (VERY_AGGRESSIVE_JERK_FACTOR, VERY_AGGRESSIVE_T_FOLLOW)
     assert active
 
-  @pytest.mark.parametrize("personality", [Personality.aggressive, *NON_AGGRESSIVE])
+  @parameterized.expand(ALL_PERSONALITIES, names=["personality"])
   def test_toggle_off_is_a_no_op(self, personality):
     planner = _planner(False)
     planner.update_very_aggressive_active(personality)
     assert planner.very_aggressive_overrides() == (None, None)
     assert not planner.very_aggressive_active
 
-  @pytest.mark.parametrize("personality", NON_AGGRESSIVE)
+  @parameterized.expand(NON_AGGRESSIVE, names=["personality"])
   def test_toggle_on_never_shortens_follow_distance(self, personality):
     """Direction check: gating may only ever lengthen the follow, never shorten it."""
     _, _, gated = _resolve(True, personality)
     assert gated > VERY_AGGRESSIVE_T_FOLLOW
 
 
-class TestPublishedFlagMatchesAppliedTuning:
-  @pytest.mark.parametrize("personality", [Personality.aggressive, *NON_AGGRESSIVE])
-  @pytest.mark.parametrize("toggle_on", [True, False])
+class TestPublishedFlagMatchesAppliedTuning(OpenpilotTestCase):
+  @parameterized.expand(itertools.product([True, False], ALL_PERSONALITIES), names=["toggle_on", "personality"])
   def test_flag_is_true_iff_tuning_applied(self, toggle_on, personality):
     """longitudinalPlanSP.veryAggressive must mean 'this frame used the VA tuning'.
 
