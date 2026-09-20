@@ -54,6 +54,27 @@ TurnDirection = custom.ModelDataV2SP.TurnDirection
 
 IGNORED_SAFETY_MODES = (SafetyModel.silent, SafetyModel.noOutput)
 
+# Index into PERSONALITY_RANK_ORDER = aggressiveness rank (low = relaxed, high = aggressive).
+# The capnp enum is not ordered by aggressiveness (aggressive @0, standard @1, relaxed @2),
+# so stepping "one notch more aggressive" needs this table rather than +/-1 on the ordinal.
+#
+# Three steps, not four: on this branch Very Aggressive is a settings toggle
+# ("VeryAggressivePersonality") that REPLACES the Aggressive tuning while personality ==
+# aggressive -- see sunnypilot/selfdrive/controls/lib/longitudinal_planner.py
+# (very_aggressive_active / very_aggressive_overrides). It is not a LongitudinalPersonality
+# ordinal here, and making it one would mean adding a field to cereal/log.capnp, which
+# tracks upstream and whose field tags are append-only.
+PERSONALITY_RANK_ORDER = [2, 1, 0]
+PERSONALITY_TO_RANK = {p: i for i, p in enumerate(PERSONALITY_RANK_ORDER)}
+assert sorted(PERSONALITY_RANK_ORDER) == sorted(log.LongitudinalPersonality.schema.enumerants.values())
+
+
+def _step_personality_ranked(current: int, direction: int) -> int:
+  """Step current personality by +/-1 rank along PERSONALITY_RANK_ORDER, clamped at endpoints."""
+  cur_rank = PERSONALITY_TO_RANK[current]
+  new_rank = max(0, min(len(PERSONALITY_RANK_ORDER) - 1, cur_rank + direction))
+  return PERSONALITY_RANK_ORDER[new_rank]
+
 
 class SelfdriveD(CruiseHelper):
   def __init__(self, CP=None, CP_SP=None):
@@ -184,6 +205,35 @@ class SelfdriveD(CruiseHelper):
 
     CruiseHelper.__init__(self, self.CP)
     self.button_state_tracker = ButtonStateTracker()
+
+  def _set_personality(self, new_personality: int) -> None:
+    if new_personality != self.personality:
+      self.personality = new_personality
+      self.params.put('LongitudinalPersonality', self.personality)
+      self.events.add(EventName.personalityChanged)
+
+  def _update_personality(self, CS) -> None:
+    """Step the personality from gapAdjustCruise button events.
+
+    Rivian's scroll wheel is a rotary encoder, so carstate_ext encodes the scroll direction
+    inline on ButtonEvent.pressed (True -> +1 rank, False -> -1 rank) and emits one event per
+    detent. Stepping is clamped at the ends of the rank order: scrolling past relaxed or
+    aggressive holds there rather than wrapping around to the opposite extreme.
+
+    Other brands have a real press/release distance button and keep the legacy one-way cycle
+    on the release edge, with the long-press that toggles experimental mode filtered out.
+    """
+    if not self.CP.openpilotLongitudinalControl:
+      return
+
+    if self.CP.brand == 'rivian':
+      for be in CS.buttonEvents:
+        if be.type == ButtonType.gapAdjustCruise:
+          self._set_personality(_step_personality_ranked(self.personality, +1 if be.pressed else -1))
+    elif any(not be.pressed and be.type == ButtonType.gapAdjustCruise for be in CS.buttonEvents):
+      if not self.experimental_mode_switched:
+        self._set_personality((self.personality - 1) % 3)
+      self.experimental_mode_switched = False
 
   def update_events(self, CS):
     """Compute onroadEvents from carState"""
@@ -524,14 +574,7 @@ class SelfdriveD(CruiseHelper):
 
     CruiseHelper.update(self, CS, self.events_sp, self.experimental_mode)
 
-    # decrement personality on distance button press
-    if self.CP.openpilotLongitudinalControl:
-      if any(not be.pressed and be.type == ButtonType.gapAdjustCruise for be in CS.buttonEvents):
-        if not self.experimental_mode_switched:
-          self.personality = (self.personality - 1) % 3
-          self.params.put('LongitudinalPersonality', self.personality)
-          self.events.add(EventName.personalityChanged)
-        self.experimental_mode_switched = False
+    self._update_personality(CS)
 
     self.icbm.run(CS, self.sm['carControl'], self.sm['longitudinalPlanSP'], self.is_metric)
 

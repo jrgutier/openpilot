@@ -65,3 +65,19 @@ class TestCruiseHelper(OpenpilotTestCase):
         # mode should not be toggled
         assert self.cruise_helper._experimental_mode == experimental_mode
         assert self.cruise_helper.experimental_mode_switched is False
+
+  def test_rivian_scroll_events_never_trip_the_long_press(self) -> None:
+    """Rivian's gapAdjustCruise events carry scroll DIRECTION on `pressed`, not press state,
+    so a driver holding the wheel at one direction must not silently toggle experimental mode."""
+    CP = car.CarParams(openpilotLongitudinalControl=self.openpilot_longitudinal, brand='rivian')
+    cruise_helper = CruiseHelper(CP)
+    cruise_helper._experimental_mode = False
+
+    for _ in range(DISTANCE_LONG_PRESS * 2):
+      CS = car.CarState(cruiseState={"available": True})
+      CS.buttonEvents = [ButtonEvent(type=ButtonType.gapAdjustCruise, pressed=True)]
+      cruise_helper.update(CS, self.events, False)
+
+    assert cruise_helper.button_frame_counts[ButtonType.gapAdjustCruise] == 0
+    assert cruise_helper._experimental_mode is False
+    assert cruise_helper.experimental_mode_switched is False

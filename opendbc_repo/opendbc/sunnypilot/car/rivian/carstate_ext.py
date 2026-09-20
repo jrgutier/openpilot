@@ -21,6 +21,10 @@ ButtonType = structs.CarState.ButtonEvent.Type
 MAX_SET_SPEED = 85 * CV.MPH_TO_MS
 MIN_SET_SPEED = 20 * CV.MPH_TO_MS
 
+# Maps the physical scroll direction onto the personality axis. Asserted from logs;
+# flip this one constant if on-vehicle test shows the toggle stepping the wrong way.
+RIVIAN_DIRECTION_SIGN: int = -1
+
 
 class CarStateExt:
   def __init__(self, CP: structs.CarParams, CP_SP: structs.CarParamsSP):
@@ -30,7 +34,7 @@ class CarStateExt:
     self.set_speed = 10
     self.increase_button = False
     self.decrease_button = False
-    self.distance_button = 0
+    self.distance_button: int | None = None  # None until the first scroll counter value is seen
     self.increase_counter = 0
     self.decrease_counter = 0
     self.vdm_user_adas_request = 0
@@ -132,10 +136,24 @@ class CarStateExt:
 
     if self.CP.openpilotLongitudinalControl:
       # distance scroll wheel
-      right_scroll = cp_park.vl["WheelButtons_Fwd"]["RightButton_Scroll"]
-      if right_scroll != 255:
-        if self.distance_button != right_scroll:
-          button_events.append(structs.CarState.ButtonEvent(pressed=False, type=ButtonType.gapAdjustCruise))
+      #
+      # RightButton_Scroll is a bidirectional 8-bit rotary counter (mod 256), NOT a
+      # press/release signal. 255 is an ordinary mid-stream value, so the old `!= 255`
+      # guard was not skipping an "unconnected" sentinel -- it silently dropped every
+      # scroll event that happened to land on 255, once per wrap of the counter.
+      right_scroll = int(cp_park.vl["WheelButtons_Fwd"]["RightButton_Scroll"])
+      if self.distance_button is None:
+        # Seed only: the first value carries no delta, so it must not emit an event.
+        self.distance_button = right_scroll
+      elif self.distance_button != right_scroll:
+        # Signed delta across the mod-256 wrap, in [-128, 127]. A one-detent 255 -> 0 step
+        # is +1 here, not -255, and 0 -> 255 is -1, not +255.
+        delta = ((right_scroll - self.distance_button + 128) % 256) - 128
+        # Direction rides on ButtonEvent.pressed so the consumer needs no second signal:
+        #   pressed=True  -> one step toward more aggressive
+        #   pressed=False -> one step toward more relaxed
+        pressed = (RIVIAN_DIRECTION_SIGN * (1 if delta > 0 else -1)) > 0
+        button_events.append(structs.CarState.ButtonEvent(pressed=pressed, type=ButtonType.gapAdjustCruise))
         self.distance_button = right_scroll
 
       # button logic for set-speed
