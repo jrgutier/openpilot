@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Mirror device rlogs incrementally into ~/sunnypilot-logs/.
+# Mirror device rlogs incrementally into the NAS archive at /Volumes/home/sunnypilot-logs/realdata/.
 #
 # Usage: sync_logs.sh [--dry-run] [--host HOST] [--remote-path PATH] [--local-path PATH]
 #
@@ -7,17 +7,17 @@
 # .omc/plans/rivian-kp-tuning.md (Step 1).
 set -euo pipefail
 
-REMOTE_HOST="comma@192.168.1.114"
+REMOTE_HOST="comma@192.168.1.115"
 REMOTE_PATH="/data/media/0/realdata/"
-LOCAL_PATH="${HOME}/sunnypilot-logs/"
+LOCAL_PATH="/Volumes/home/sunnypilot-logs/realdata/"
 DRY_RUN=0
 
 usage() {
   cat <<'EOF'
-sync_logs.sh — incrementally mirror device rlogs into ~/sunnypilot-logs/
+sync_logs.sh — incrementally mirror device rlogs into /Volumes/home/sunnypilot-logs/realdata/
 
   --dry-run            run rsync in dry-run mode (no writes)
-  --host HOST          override remote host (default: comma@192.168.1.114)
+  --host HOST          override remote host (default: comma@192.168.1.115)
   --remote-path PATH   override remote source path
   --local-path PATH    override local mirror path
   -h, --help           show this help and exit
@@ -53,6 +53,16 @@ while [ $# -gt 0 ]; do
       ;;
   esac
 done
+
+# The default lives on an SMB share. If it is not mounted, say so: otherwise mkdir fails with a
+# bare "Permission denied" under /Volumes, which points nowhere near the real problem.
+if [[ "${LOCAL_PATH}" == /Volumes/* ]]; then
+  SHARE_ROOT="/Volumes/$(echo "${LOCAL_PATH#/Volumes/}" | cut -d/ -f1)"
+  if ! mount | grep -q " on ${SHARE_ROOT} "; then
+    echo "sync_logs.sh: ${SHARE_ROOT} is not mounted -- mount the share or pass --local-path" >&2
+    exit 69
+  fi
+fi
 
 mkdir -p "${LOCAL_PATH}"
 

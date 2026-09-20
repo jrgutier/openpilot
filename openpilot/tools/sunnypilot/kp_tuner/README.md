@@ -9,7 +9,7 @@ rlogs. NN FF off; base Kp / `torque_data` frozen.
 ```
 ./tools/sunnypilot/kp_tuner/sync_logs.sh
 python -m openpilot.tools.sunnypilot.kp_tuner.report \
-  --log-dir ~/sunnypilot-logs --joint-per-model --out-html /tmp/kp_tuner.html
+  --log-dir /Volumes/home/sunnypilot-logs --joint-per-model --out-html /tmp/kp_tuner.html
 # Apply each bucket's Apply triple via the Tuning UI, drive a fresh route, repeat.
 ```
 
