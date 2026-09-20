@@ -1,12 +1,15 @@
 name: Build Prebuilt
 
 # Branch-generic prebuilt builder for the comma 3X self-hosted runner (label: tici).
-# Lives ON each *-src source branch (rel-src, stg-src), NOT on dev or ap-dev. Fires on push to its
-# branch and publishes the de-suffixed prebuilt branch in THIS repo:
-#   push to rel-src -> builds rel-src -> publishes rel
-#   push to stg-src -> builds stg-src -> publishes stg
+# Lives ON each source branch (release, staging), NOT on dev or ap-dev. Fires on push to its
+# branch and publishes the suffixed prebuilt branch in THIS repo:
+#   push to release -> builds release -> publishes release-prebuilt
+#   push to staging -> builds staging -> publishes staging-prebuilt
+# This follows the openpilot/sunnypilot convention -- plain name is the source, the built artifact
+# carries the suffix (cf. sunnypilot's master/master-ci and its *-prebuilt branches). AdventurePilot
+# upstream uses the inverse (stg-src source -> stg prebuilt); this fork does not.
 # Same-repo publish uses the built-in GITHUB_TOKEN (no PAT). GITHUB_TOKEN pushes don't re-trigger CI,
-# so publishing rel/stg can't loop.
+# so publishing the prebuilt branch can't loop.
 #
 # Safety carried over from the known-good build:
 #   - LFS: never carry .gitattributes into the published tree (so `git add` can't re-pointerize real
@@ -19,7 +22,7 @@ name: Build Prebuilt
 
 on:
   push:
-    branches: [ rel-src, stg-src ]
+    branches: [ release, staging ]
   workflow_dispatch:
     inputs:
       source_branch:
@@ -272,7 +275,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -e
-          # rel-src -> rel, stg-src -> stg; anything else falls back to <branch>-prebuilt.
+          # staging -> staging-prebuilt, release -> release-prebuilt. The *-src arm is kept so a
+          # legacy AdventurePilot-style branch still resolves the way upstream expects.
           case "$SRC" in
             *-src) DEV_BRANCH="${SRC%-src}" ;;
             *)     DEV_BRANCH="${SRC}-prebuilt" ;;
